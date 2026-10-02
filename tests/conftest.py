@@ -24,12 +24,20 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
 @pytest.fixture(autouse=True)
-def _block_outbound_network(monkeypatch: pytest.MonkeyPatch) -> None:
+def _block_outbound_network(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Fail any test that opens a socket to something other than loopback.
 
     The fake camera runs on loopback, so legitimate tests are unaffected. A test that
     reached a real camera on someone's desk would otherwise pass locally and fail in CI.
+
+    Tests marked `hardware` are exempt: reaching a real camera is the entire point of that
+    tier, and it is opt-in and deselected in CI.
     """
+    if request.node.get_closest_marker("hardware") is not None:
+        return
+
     real_connect = socket.socket.connect
 
     def guarded_connect(self: socket.socket, address: object) -> None:

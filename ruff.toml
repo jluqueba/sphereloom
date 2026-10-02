@@ -35,6 +35,9 @@ ignore = [
 # Tests may use hardcoded bind addresses, fake credentials and sample system paths that
 # would rightly be flagged in production code.
 "tests/**" = ["S104", "S105", "S106", "S108", "S311"]
+# Maintainer scripts are command-line tools, so writing to the console is their job. The
+# server itself still may not print: stdout there belongs to the MCP protocol.
+"scripts/**" = ["T20"]
 
 [lint.isort]
 known-first-party = ["sphereloom"]
