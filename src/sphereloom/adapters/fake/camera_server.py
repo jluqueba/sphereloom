@@ -28,7 +28,7 @@ import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, ClassVar
 
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -53,6 +53,26 @@ DEFAULT_MODEL = "Insta360 X5"
 DEFAULT_FIRMWARE = "v1.0.0-fake"
 DEFAULT_SERIAL = "FAKE0000000000"
 STORAGE_ROOT = "/DCIM/Camera01"
+
+#: The vendor requires this static header on every protocol request. It is the only access
+#: control the protocol has, and the fake enforces it so that an adapter which forgets it
+#: fails here rather than against someone's camera.
+XSRF_HEADER = "X-XSRF-Protected"
+XSRF_VALUE = "1"
+
+#: Values each writable option accepts. `getOptions` advertises these and `setOptions`
+#: enforces them, because a fake that accepts a value the camera would reject teaches the
+#: adapter a habit that breaks on hardware.
+SUPPORTED_CAPTURE_MODES = ("image", "video")
+SUPPORTED_PHOTO_STITCHING = ("none", "ondevice")
+SUPPORTED_VIDEO_TYPES = ("normal", "timelapse", "hdr")
+SUPPORTED_WHITE_BALANCE = ("auto", "daylight", "cloudy", "incandescent")
+SUPPORTED_EXPOSURE_DELAY = (0, 3, 5, 10)
+SUPPORTED_TOP_BOTTOM_CORRECTION = ("on", "off")
+
+#: Options the vendor does not expose over this protocol. Named explicitly so the refusal
+#: carries a useful message rather than looking like an unknown-option typo.
+PROTOCOL_UNSUPPORTED_OPTIONS = frozenset({"iso", "shutterSpeed", "exposureProgram"})
 
 
 @dataclass(slots=True)
@@ -151,6 +171,10 @@ class FakeCameraState:
     capture_mode: str = "image"
     photo_stitching: str = "ondevice"
     video_type: str = "normal"
+    white_balance: str = "auto"
+    exposure_delay: int = 0
+    top_bottom_correction: str = "off"
+    mute_enabled: bool = False
     recording_since: datetime | None = None
     files: list[FakeFile] = field(default_factory=_default_files)
     next_sequence: int = 100
@@ -206,6 +230,36 @@ class FakeCamera:
             {"name": name, "state": "error", "error": {"code": code, "message": message}}
         )
 
+    def _path_failure(self, request: Request) -> Response | None:
+        """Apply a scenario that targets this specific endpoint."""
+        if request.url.path in self.scenario.failing_paths:
+            return Response("upstream failure", status_code=503)
+        return None
+
+    def _guard(self, request: Request) -> Response | None:
+        """Checks every OSC protocol endpoint must pass. Returns a rejection, or None.
+
+        Centralised on purpose: when the header check lived in one handler it silently did
+        not apply to the others, and a selective failure scenario only affected the single
+        endpoint that happened to implement it.
+
+        File downloads deliberately do not go through here. The vendor documents them as
+        plain HTTP requests to a file URL, with no protocol header, and inventing a
+        requirement the camera does not have would be its own kind of infidelity.
+        """
+        if request.headers.get(XSRF_HEADER) != XSRF_VALUE:
+            return JSONResponse(
+                {
+                    "error": {
+                        "code": "invalidParameterValue",
+                        "message": f"Missing or invalid {XSRF_HEADER} header.",
+                    }
+                },
+                status_code=403,
+            )
+
+        return self._path_failure(request)
+
     def _should_fail_command(self) -> bool:
         if self._commands_failed < self.scenario.fail_first_n_commands:
             self._commands_failed += 1
@@ -218,8 +272,9 @@ class FakeCamera:
         self.request_log.append("GET /osc/info")
         await self._apply_latency()
 
-        if "/osc/info" in self.scenario.failing_paths:
-            return Response("upstream failure", status_code=503)
+        rejected = self._guard(request)
+        if rejected is not None:
+            return rejected
 
         return JSONResponse(
             {
@@ -249,6 +304,10 @@ class FakeCamera:
         self.request_log.append("POST /osc/state")
         await self._apply_latency()
 
+        rejected = self._guard(request)
+        if rejected is not None:
+            return rejected
+
         if self.scenario.malformed_json:
             return Response("{not valid json", media_type="application/json")
 
@@ -266,15 +325,21 @@ class FakeCamera:
         )
 
     async def osc_execute(self, request: Request) -> Response:
-        await self._apply_latency()
+        rejected = self._guard(request)
+        if rejected is not None:
+            return rejected
 
         if self._executing:
             # The vendor explicitly advises against overlapping commands. Recording the
             # violation lets a test prove the adapter serialises its calls.
             self.concurrent_command_detected = True
 
+        # The flag is set before the first await on purpose. Delaying it until after the
+        # latency sleep would let two overlapping requests both wait, then dispatch one
+        # after the other, so a missing serialising lock in the adapter would go unnoticed.
         self._executing = True
         try:
+            await self._apply_latency()
             return await self._dispatch(request)
         finally:
             self._executing = False
@@ -332,6 +397,10 @@ class FakeCamera:
         self.request_log.append("POST /osc/commands/status")
         await self._apply_latency()
 
+        rejected = self._guard(request)
+        if rejected is not None:
+            return rejected
+
         try:
             payload = await request.json()
         except (json.JSONDecodeError, ValueError):
@@ -372,6 +441,10 @@ class FakeCamera:
         name = request.path_params["filename"]
         self.request_log.append(f"GET {STORAGE_ROOT}/{name}")
         await self._apply_latency()
+
+        rejected = self._path_failure(request)
+        if rejected is not None:
+            return rejected
 
         match = next((f for f in self.state.files if f.name == name), None)
         if match is None:
@@ -418,20 +491,20 @@ class FakeCamera:
         requested = parameters.get("optionNames") or []
         available: dict[str, Any] = {
             "captureMode": self.state.capture_mode,
-            "captureModeSupport": ["image", "video"],
+            "captureModeSupport": list(SUPPORTED_CAPTURE_MODES),
             "photoStitching": self.state.photo_stitching,
-            "photoStitchingSupport": ["none", "ondevice"],
+            "photoStitchingSupport": list(SUPPORTED_PHOTO_STITCHING),
             "totalSpace": self.state.total_space,
             "remainingSpace": 0 if self.scenario.storage_full else self.state.remaining_space,
-            "exposureDelay": 0,
-            "exposureDelaySupport": [0, 3, 5, 10],
-            "whiteBalance": "auto",
-            "whiteBalanceSupport": ["auto", "daylight", "cloudy", "incandescent"],
+            "exposureDelay": self.state.exposure_delay,
+            "exposureDelaySupport": list(SUPPORTED_EXPOSURE_DELAY),
+            "whiteBalance": self.state.white_balance,
+            "whiteBalanceSupport": list(SUPPORTED_WHITE_BALANCE),
             "fileFormat": {"type": "jpeg", "width": 6080, "height": 3040},
             "_videoType": self.state.video_type,
-            "_videoTypeSupport": ["normal", "timelapse", "hdr"],
-            "_topBottomCorrection": "off",
-            "_MuteEnable": False,
+            "_videoTypeSupport": list(SUPPORTED_VIDEO_TYPES),
+            "_topBottomCorrection": self.state.top_bottom_correction,
+            "_MuteEnable": self.state.mute_enabled,
             "_batteryCapacity": int(self.state.battery_level * 100),
             "_sysTimestamp": 1767225600,
         }
@@ -444,12 +517,25 @@ class FakeCamera:
             {"name": "camera.getOptions", "state": "done", "results": {"options": selected}}
         )
 
+    #: Writable options, mapped to the state attribute they set and the values they accept.
+    #: Driving both validation and assignment from one table is what stops `getOptions` and
+    #: `setOptions` drifting apart, which is the bug this replaced.
+    _WRITABLE_OPTIONS: ClassVar[dict[str, tuple[str, tuple[Any, ...]]]] = {
+        "captureMode": ("capture_mode", SUPPORTED_CAPTURE_MODES),
+        "photoStitching": ("photo_stitching", SUPPORTED_PHOTO_STITCHING),
+        "whiteBalance": ("white_balance", SUPPORTED_WHITE_BALANCE),
+        "exposureDelay": ("exposure_delay", SUPPORTED_EXPOSURE_DELAY),
+        "_videoType": ("video_type", SUPPORTED_VIDEO_TYPES),
+        "_topBottomCorrection": ("top_bottom_correction", SUPPORTED_TOP_BOTTOM_CORRECTION),
+        "_MuteEnable": ("mute_enabled", (True, False)),
+    }
+
     def _set_options(self, request: Request, parameters: dict[str, Any]) -> Response:
         options = parameters.get("options") or {}
 
         # The vendor documents no exposure control over this protocol. Rejecting it here
         # keeps the fake honest: if the adapter ever claims to support it, a test fails.
-        unsupported = {"iso", "shutterSpeed", "exposureProgram"} & set(options)
+        unsupported = PROTOCOL_UNSUPPORTED_OPTIONS & set(options)
         if unsupported:
             return self._vendor_error(
                 "camera.setOptions",
@@ -457,20 +543,28 @@ class FakeCamera:
                 f"Option(s) not supported over this protocol: {', '.join(sorted(unsupported))}.",
             )
 
-        if "captureMode" in options:
-            mode = str(options["captureMode"])
-            if mode not in {"image", "video"}:
+        unknown = set(options) - set(self._WRITABLE_OPTIONS)
+        if unknown:
+            return self._vendor_error(
+                "camera.setOptions",
+                "invalidParameterName",
+                f"Unknown or read-only option(s): {', '.join(sorted(unknown))}.",
+            )
+
+        # Validate everything before changing anything. A half-applied settings change is
+        # worse than a rejected one, because the caller cannot tell what state it left.
+        for name, value in options.items():
+            _, allowed = self._WRITABLE_OPTIONS[name]
+            if value not in allowed:
                 return self._vendor_error(
                     "camera.setOptions",
                     "invalidParameterValue",
-                    f"captureMode {mode!r} is not supported.",
+                    f"{value!r} is not an accepted value for {name}.",
                 )
-            self.state.capture_mode = mode
 
-        if "photoStitching" in options:
-            self.state.photo_stitching = str(options["photoStitching"])
-        if "_videoType" in options:
-            self.state.video_type = str(options["_videoType"])
+        for name, value in options.items():
+            attribute, _ = self._WRITABLE_OPTIONS[name]
+            setattr(self.state, attribute, value)
 
         return JSONResponse({"name": "camera.setOptions", "state": "done"})
 
@@ -615,11 +709,14 @@ class FakeCamera:
         known = {f.name: f for f in self.state.files}
 
         missing: list[str] = []
-        removable: list[FakeFile] = []
+        # Keyed by name so the same file listed twice is removed once. Without this the
+        # second removal raises, returning a server error after the file is already gone:
+        # a failed call that nevertheless changed state, which is the worst kind.
+        removable: dict[str, FakeFile] = {}
         for url in requested:
             name = str(url).rsplit("/", 1)[-1]
             if name in known:
-                removable.append(known[name])
+                removable[name] = known[name]
             else:
                 missing.append(str(url))
 
@@ -633,7 +730,7 @@ class FakeCamera:
                 }
             )
 
-        for target in removable:
+        for target in removable.values():
             self.state.files.remove(target)
 
         return JSONResponse({"name": "camera.delete", "state": "done", "results": {"fileUrls": []}})

@@ -34,6 +34,7 @@ import argparse
 import json
 import re
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,10 @@ import httpx
 
 DEFAULT_BASE_URL = "http://192.168.42.1"
 OUTPUT_DIR = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "osc"
+
+#: How long to wait for a capture to report completion before giving up on recording its
+#: terminal response. Generous, because a high-resolution still can take a while to write.
+CAPTURE_DEADLINE_SECONDS = 60.0
 
 #: The vendor requires this static header on every request. There is no other authentication.
 HEADERS = {
@@ -217,6 +222,32 @@ def _execute(client: httpx.Client, name: str, parameters: dict[str, Any] | None 
     return response.json()
 
 
+def _poll_until_done(
+    client: httpx.Client, command_id: str, *, deadline_seconds: float, interval: float = 1.0
+) -> Any:
+    """Poll a command to its terminal state.
+
+    The vendor recommends about one poll per second, so the pacing here is deliberate
+    rather than a tight loop. The deadline matters because a capture that never completes
+    would otherwise hang the capture session indefinitely.
+    """
+    started = time.monotonic()
+    while time.monotonic() - started < deadline_seconds:
+        response = client.post("/osc/commands/status", json={"id": command_id})
+        response.raise_for_status()
+        body = response.json()
+        state = body.get("state")
+        if state in {"done", "error"}:
+            return body
+        time.sleep(interval)
+
+    message = (
+        f"Command {command_id} did not finish within {deadline_seconds:.0f}s. "
+        "The camera may still be writing the file; nothing was left in a bad state."
+    )
+    raise TimeoutError(message)
+
+
 def capture(base_url: str, *, take_photo: bool, timeout: float) -> dict[str, Any]:
     """Run the capture sequence and return raw, un-redacted payloads."""
     captured: dict[str, Any] = {}
@@ -255,7 +286,26 @@ def capture(base_url: str, *, take_photo: bool, timeout: float) -> dict[str, Any
 
         if take_photo:
             print("  POST camera.takePicture", file=sys.stderr)
-            captured["take_picture"] = _execute(client, "camera.takePicture")
+            acknowledgement = _execute(client, "camera.takePicture")
+            captured["take_picture"] = acknowledgement
+
+            # The acknowledgement only says the capture started. The terminal response is
+            # the one carrying fileUrl and the file-group fields, and that is precisely the
+            # shape the fake camera has to be checked against, so record both.
+            command_id = acknowledgement.get("id")
+            if command_id:
+                print(f"  POST /osc/commands/status (polling {command_id})", file=sys.stderr)
+                try:
+                    captured["take_picture_result"] = _poll_until_done(
+                        client, str(command_id), deadline_seconds=CAPTURE_DEADLINE_SECONDS
+                    )
+                except (TimeoutError, httpx.HTTPError) as exc:
+                    print(f"  capture did not complete: {exc}", file=sys.stderr)
+            else:
+                print(
+                    "  no command id returned; recording the acknowledgement only",
+                    file=sys.stderr,
+                )
 
     return captured
 

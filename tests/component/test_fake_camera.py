@@ -144,7 +144,10 @@ def test_take_picture_completes_asynchronously(client: httpx.Client) -> None:
 
 def test_take_picture_reports_progress_while_running() -> None:
     camera = FakeCamera(capture_polls=3)
-    with run_fake_camera(camera) as base_url, httpx.Client(base_url=base_url) as http:
+    with (
+        run_fake_camera(camera) as base_url,
+        httpx.Client(base_url=base_url, headers=HEADERS) as http,
+    ):
         started = _execute(http, "camera.takePicture")
         body = http.post("/osc/commands/status", json={"id": started["id"]}).json()
 
@@ -339,7 +342,10 @@ def test_a_failed_delete_removes_nothing(client: httpx.Client) -> None:
 
 def test_a_busy_camera_reports_a_vendor_error() -> None:
     camera = FakeCamera(scenario=scenarios.BUSY)
-    with run_fake_camera(camera) as base_url, httpx.Client(base_url=base_url) as http:
+    with (
+        run_fake_camera(camera) as base_url,
+        httpx.Client(base_url=base_url, headers=HEADERS) as http,
+    ):
         body = _execute(http, "camera.takePicture")
 
     assert body["state"] == "error"
@@ -349,7 +355,10 @@ def test_a_busy_camera_reports_a_vendor_error() -> None:
 def test_an_unactivated_camera_says_so() -> None:
     """Nothing SphereLoom does can fix this, so the message must reach the user intact."""
     camera = FakeCamera(scenario=scenarios.UNACTIVATED)
-    with run_fake_camera(camera) as base_url, httpx.Client(base_url=base_url) as http:
+    with (
+        run_fake_camera(camera) as base_url,
+        httpx.Client(base_url=base_url, headers=HEADERS) as http,
+    ):
         body = _execute(http, "camera.takePicture")
 
     assert body["error"]["code"] == "unactivated"
@@ -357,7 +366,10 @@ def test_an_unactivated_camera_says_so() -> None:
 
 def test_a_full_card_refuses_capture() -> None:
     camera = FakeCamera(scenario=scenarios.STORAGE_FULL)
-    with run_fake_camera(camera) as base_url, httpx.Client(base_url=base_url) as http:
+    with (
+        run_fake_camera(camera) as base_url,
+        httpx.Client(base_url=base_url, headers=HEADERS) as http,
+    ):
         body = _execute(http, "camera.takePicture")
         state = http.post("/osc/state").json()
 
@@ -368,7 +380,10 @@ def test_a_full_card_refuses_capture() -> None:
 def test_malformed_json_is_actually_malformed() -> None:
     """Some firmware returns broken JSON under load. The adapter must survive it."""
     camera = FakeCamera(scenario=scenarios.MALFORMED_JSON)
-    with run_fake_camera(camera) as base_url, httpx.Client(base_url=base_url) as http:
+    with (
+        run_fake_camera(camera) as base_url,
+        httpx.Client(base_url=base_url, headers=HEADERS) as http,
+    ):
         response = http.post("/osc/state")
 
     with pytest.raises(ValueError, match=r"(?i)json|expecting"):
@@ -377,7 +392,10 @@ def test_malformed_json_is_actually_malformed() -> None:
 
 def test_a_server_error_is_surfaced_as_a_5xx() -> None:
     camera = FakeCamera(scenario=scenarios.SERVER_ERROR)
-    with run_fake_camera(camera) as base_url, httpx.Client(base_url=base_url) as http:
+    with (
+        run_fake_camera(camera) as base_url,
+        httpx.Client(base_url=base_url, headers=HEADERS) as http,
+    ):
         response = http.post("/osc/commands/execute", json={"name": "camera.takePicture"})
 
     assert response.status_code == 500
@@ -386,7 +404,10 @@ def test_a_server_error_is_surfaced_as_a_5xx() -> None:
 def test_a_flaky_camera_recovers_after_failing() -> None:
     """Proves recovery, not merely that failure is noticed."""
     camera = FakeCamera(scenario=scenarios.FLAKY)
-    with run_fake_camera(camera) as base_url, httpx.Client(base_url=base_url) as http:
+    with (
+        run_fake_camera(camera) as base_url,
+        httpx.Client(base_url=base_url, headers=HEADERS) as http,
+    ):
         first = http.post("/osc/commands/execute", json={"name": "camera.getOptions"})
         second = http.post("/osc/commands/execute", json={"name": "camera.getOptions"})
         third = http.post("/osc/commands/execute", json={"name": "camera.getOptions"})
@@ -408,7 +429,10 @@ def test_a_truncated_download_is_detectable() -> None:
     received = 0
     declared = 0
 
-    with run_fake_camera(camera) as base_url, httpx.Client(base_url=base_url) as http:
+    with (
+        run_fake_camera(camera) as base_url,
+        httpx.Client(base_url=base_url, headers=HEADERS) as http,
+    ):
         listing = _execute(http, "camera.listFiles", fileType="image", entryCount=1)
         path = listing["results"]["entries"][0]["_localFileUrl"]
 
@@ -429,7 +453,10 @@ def test_a_truncated_download_is_detectable() -> None:
 def test_a_dropped_download_fails_rather_than_returning_a_short_file() -> None:
     camera = FakeCamera(scenario=scenarios.DROPPED_DOWNLOAD)
 
-    with run_fake_camera(camera) as base_url, httpx.Client(base_url=base_url) as http:
+    with (
+        run_fake_camera(camera) as base_url,
+        httpx.Client(base_url=base_url, headers=HEADERS) as http,
+    ):
         listing = _execute(http, "camera.listFiles", fileType="image", entryCount=1)
         path = listing["results"]["entries"][0]["_localFileUrl"]
 
@@ -439,7 +466,10 @@ def test_a_dropped_download_fails_rather_than_returning_a_short_file() -> None:
 
 def test_an_unreachable_endpoint_fails_the_call() -> None:
     camera = FakeCamera(scenario=scenarios.Scenario(failing_paths=frozenset({"/osc/info"})))
-    with run_fake_camera(camera) as base_url, httpx.Client(base_url=base_url) as http:
+    with (
+        run_fake_camera(camera) as base_url,
+        httpx.Client(base_url=base_url, headers=HEADERS) as http,
+    ):
         response = http.get("/osc/info")
 
     assert response.status_code == 503
@@ -466,3 +496,170 @@ def test_sequential_commands_are_not_flagged_as_concurrent(
     _execute(client, "camera.getOptions")
 
     assert camera.concurrent_command_detected is False
+
+
+# ---------------------------------------------------------------- required header
+
+
+def test_protocol_requests_without_the_required_header_are_rejected() -> None:
+    """The vendor requires a static header on every protocol request.
+
+    The fake enforces it so that an adapter which forgets it fails here, rather than
+    passing every test and then failing against someone's camera.
+    """
+    camera = FakeCamera()
+    with run_fake_camera(camera) as base_url, httpx.Client(base_url=base_url) as bare:
+        assert bare.get("/osc/info").status_code == 403
+        assert bare.post("/osc/state").status_code == 403
+        assert (
+            bare.post("/osc/commands/execute", json={"name": "camera.getOptions"}).status_code
+            == 403
+        )
+        assert bare.post("/osc/commands/status", json={"id": "1"}).status_code == 403
+
+
+def test_a_wrong_header_value_is_rejected() -> None:
+    camera = FakeCamera()
+    with (
+        run_fake_camera(camera) as base_url,
+        httpx.Client(base_url=base_url, headers={"X-XSRF-Protected": "0"}) as wrong,
+    ):
+        assert wrong.get("/osc/info").status_code == 403
+
+
+def test_downloads_do_not_require_the_protocol_header() -> None:
+    """File downloads are plain HTTP requests to a file URL.
+
+    The vendor documents no header requirement for them, and inventing one would be its own
+    kind of infidelity.
+    """
+    camera = FakeCamera()
+    with (
+        run_fake_camera(camera) as base_url,
+        httpx.Client(base_url=base_url, headers=HEADERS) as http,
+    ):
+        listing = _execute(http, "camera.listFiles", fileType="image", entryCount=1)
+        path = listing["results"]["entries"][0]["_localFileUrl"]
+
+        with httpx.Client(base_url=base_url) as bare:
+            assert bare.get(path).status_code == 200
+
+
+# ---------------------------------------------------------------- option fidelity
+
+
+def test_setting_white_balance_actually_changes_it(client: httpx.Client) -> None:
+    """A setter that reports success without changing anything is worse than one that fails.
+
+    The adapter would learn a habit that silently does nothing on real hardware.
+    """
+    assert (
+        _execute(client, "camera.setOptions", options={"whiteBalance": "daylight"})["state"]
+        == "done"
+    )
+
+    body = _execute(client, "camera.getOptions", optionNames=["whiteBalance"])
+    assert body["results"]["options"]["whiteBalance"] == "daylight"
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("photoStitching", "hologram"),
+        ("_videoType", "interpretive-dance"),
+        ("whiteBalance", "ultraviolet"),
+        ("exposureDelay", 7),
+    ],
+)
+def test_values_outside_the_advertised_support_list_are_rejected(
+    client: httpx.Client, option: str, value: object
+) -> None:
+    body = _execute(client, "camera.setOptions", options={option: value})
+
+    assert body["state"] == "error"
+    assert body["error"]["code"] == "invalidParameterValue"
+
+
+def test_unknown_options_are_rejected(client: httpx.Client) -> None:
+    body = _execute(client, "camera.setOptions", options={"warpDrive": "engage"})
+
+    assert body["state"] == "error"
+    assert body["error"]["code"] == "invalidParameterName"
+
+
+def test_read_only_options_are_rejected(client: httpx.Client) -> None:
+    body = _execute(client, "camera.setOptions", options={"totalSpace": 1})
+
+    assert body["state"] == "error"
+    assert body["error"]["code"] == "invalidParameterName"
+
+
+def test_a_rejected_batch_changes_nothing(client: httpx.Client) -> None:
+    """Validation happens before assignment, so a bad value cannot half-apply a change."""
+    before = _execute(client, "camera.getOptions", optionNames=["captureMode"])
+
+    _execute(
+        client,
+        "camera.setOptions",
+        options={"captureMode": "video", "whiteBalance": "ultraviolet"},
+    )
+
+    after = _execute(client, "camera.getOptions", optionNames=["captureMode"])
+    assert after["results"]["options"] == before["results"]["options"]
+
+
+def test_advertised_support_lists_match_what_is_accepted(client: httpx.Client) -> None:
+    """`getOptions` and `setOptions` are driven by one table, and this proves it."""
+    advertised = _execute(client, "camera.getOptions", optionNames=["whiteBalanceSupport"])
+    for value in advertised["results"]["options"]["whiteBalanceSupport"]:
+        body = _execute(client, "camera.setOptions", options={"whiteBalance": value})
+        assert body["state"] == "done", f"{value} is advertised but rejected"
+
+
+# ---------------------------------------------------------------- failure selectivity
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/osc/info", "/osc/state", "/osc/commands/execute", "/osc/commands/status"],
+)
+def test_a_failing_path_scenario_targets_the_endpoint_it_names(path: str) -> None:
+    """The selector has to work for every endpoint, or a test silently exercises success."""
+    camera = FakeCamera(scenario=scenarios.Scenario(failing_paths=frozenset({path})))
+    with (
+        run_fake_camera(camera) as base_url,
+        httpx.Client(base_url=base_url, headers=HEADERS) as http,
+    ):
+        if path == "/osc/info":
+            response = http.get(path)
+        elif path == "/osc/commands/execute":
+            response = http.post(path, json={"name": "camera.getOptions"})
+        elif path == "/osc/commands/status":
+            response = http.post(path, json={"id": "000001"})
+        else:
+            response = http.post(path)
+
+    assert response.status_code == 503
+
+
+def test_an_untargeted_endpoint_keeps_working() -> None:
+    camera = FakeCamera(scenario=scenarios.Scenario(failing_paths=frozenset({"/osc/state"})))
+    with (
+        run_fake_camera(camera) as base_url,
+        httpx.Client(base_url=base_url, headers=HEADERS) as http,
+    ):
+        assert http.post("/osc/state").status_code == 503
+        assert http.get("/osc/info").status_code == 200
+
+
+# ---------------------------------------------------------------- deletion edge cases
+
+
+def test_deleting_the_same_file_twice_in_one_call_succeeds(client: httpx.Client) -> None:
+    """A repeated reference must not produce a failure that already changed state."""
+    listing = _execute(client, "camera.listFiles", fileType="image", entryCount=1)
+    url = listing["results"]["entries"][0]["fileUrl"]
+
+    body = _execute(client, "camera.delete", fileUrls=[url, url])
+
+    assert body["state"] == "done"

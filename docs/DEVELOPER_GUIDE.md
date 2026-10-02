@@ -5,8 +5,9 @@ Everything you need to work on SphereLoom. This is the public companion to the
 
 ## What SphereLoom is, architecturally
 
-SphereLoom is an MCP server that exposes one coherent tool surface for controlling 360
-cameras and processing 360 media, regardless of how the camera is connected.
+SphereLoom is an MCP server that exposes one coherent tool surface for controlling Insta360
+cameras and processing their 360 media, regardless of how the camera is connected. It
+targets Insta360 hardware specifically; it is not a generic 360 camera tool.
 
 ```text
 MCP client ──stdio──▶ SphereLoom server
@@ -26,7 +27,7 @@ Four ideas carry most of the design:
 1. **Ports and adapters.** The tool layer depends on the `CameraPort` and `MediaPort`
    protocols and nothing else. Swapping Wi-Fi for USB changes no tool.
 2. **Capabilities are data.** A backend declares what it supports. An unsupported operation
-   returns a structured error that explains why and links to the vendor documentation,
+   returns a structured error that explains why and links to the Insta360 documentation,
    rather than failing opaquely or timing out.
 3. **Long operations are jobs.** Downloads and exports return a job identifier immediately.
    Responses carry paths and metadata, never media bytes.
@@ -162,5 +163,5 @@ pull request checklist. Three rules worth repeating:
 
 1. Everything in the repository is in **English**.
 2. **No GPL-licensed dependencies**, anywhere.
-3. **Never commit vendor SDK binaries**, and never copy code from vendor sample
+3. **Never commit Insta360 SDK binaries**, and never copy code from Insta360 sample
    repositories, which carry no licence file.
