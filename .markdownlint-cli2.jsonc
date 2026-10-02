@@ -1,0 +1,19 @@
+{
+  // markdownlint-cli2 runner configuration. The rule set itself lives in
+  // `.markdownlint.json` so editor extensions, which only read that file, stay in sync.
+  //
+  // `ignores` keeps generated directories out of the lint run, so a local run after
+  // `pytest` gives the same answer as a clean CI checkout.
+  "config": {
+    "extends": ".markdownlint.json"
+  },
+  "globs": ["**/*.md"],
+  "ignores": [
+    ".venv/**",
+    "node_modules/**",
+    ".pytest_cache/**",
+    ".ruff_cache/**",
+    ".mypy_cache/**",
+    "htmlcov/**"
+  ]
+}

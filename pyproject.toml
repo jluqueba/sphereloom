@@ -1,0 +1,73 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sphereloom"
+version = "0.1.0.dev0"
+description = "An MCP server that lets AI agents control 360 cameras and process 360 media locally."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+authors = [{ name = "Jose Luque Ballesteros" }]
+keywords = ["mcp", "model-context-protocol", "360", "camera", "osc", "open-spherical-camera"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Multimedia :: Video",
+  "Typing :: Typed",
+]
+
+# Runtime dependencies are range-pinned so downstream installs can pick up compatible
+# fixes, while development tools are pinned exactly below. See ADR-0009.
+dependencies = [
+  "mcp>=2.2,<3",
+  "httpx>=0.28,<1",
+  "pydantic>=2.13,<3",
+  "pydantic-settings>=2.15,<3",
+]
+
+[project.optional-dependencies]
+# Development tools are pinned to exact versions on purpose: a patch release of a linter
+# or type checker must never turn an unrelated pull request red. Bumps are deliberate,
+# reviewed changes of their own. See ADR-0009.
+dev = [
+  "ruff==0.16.9",
+  "mypy==2.3.1",
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
+  "pytest-cov==7.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/jluqueba/sphereloom"
+Repository = "https://github.com/jluqueba/sphereloom"
+Issues = "https://github.com/jluqueba/sphereloom/issues"
+Changelog = "https://github.com/jluqueba/sphereloom/blob/main/CHANGELOG.md"
+
+[project.scripts]
+sphereloom = "sphereloom.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sphereloom"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "--strict-markers --strict-config"
+markers = [
+  # Real-camera tests. Opt-in only, never enabled in CI. See ADR-0007.
+  "hardware: requires a physical camera and SPHERELOOM_ENABLE_HARDWARE_TESTS=1",
+]
+
+[tool.coverage.run]
+source = ["src/sphereloom"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

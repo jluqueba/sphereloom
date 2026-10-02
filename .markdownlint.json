@@ -1,0 +1,27 @@
+{
+  "default": true,
+  "MD003": {
+    "style": "atx"
+  },
+  "MD013": false,
+  "MD024": {
+    "siblings_only": true
+  },
+  "MD029": false,
+  "MD033": {
+    "allowed_elements": [
+      "a",
+      "br",
+      "details",
+      "img",
+      "kbd",
+      "source",
+      "summary",
+      "sup"
+    ]
+  },
+  "MD040": true,
+  "MD046": {
+    "style": "fenced"
+  }
+}
