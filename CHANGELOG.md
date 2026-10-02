@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Public developer guide at `docs/DEVELOPER_GUIDE.md` covering architecture, getting
+  started, project layout, testing tiers, configuration and the security model, so the
+  repository is fully contributable from public documentation alone.
 - Python project scaffolding: `pyproject.toml` with the `sphereloom` console entry point, a
   committed dependency policy (range-pinned runtime, exactly pinned development tools),
   `ruff`, `mypy --strict` and `pytest` configuration, and a Python-oriented `.gitignore`
@@ -36,6 +39,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Release communication process describing how a shipped capability becomes an
   announcement, with a mandatory pre-publication checklist for trademark use, accuracy and
   privacy.
+- Architecture decision record ADR-0014 recording that internal design documentation is
+  encrypted at rest with `git-age`, why public documentation must stay self-sufficient, and
+  the costs that choice carries.
 - Product vision document describing the problem, target users, product principles, milestones M0–M5, non-goals and risks.
 - Milestone 1 feature specification for OSC camera control over Wi-Fi, with testable acceptance criteria.
 - Milestone 1 technical plan covering architecture, module layout, error taxonomy, security model, pagination contract, configuration schema and testing strategy.
