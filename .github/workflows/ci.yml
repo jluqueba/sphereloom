@@ -1,0 +1,140 @@
+# Continuous integration.
+#
+# Design notes, because the shape of this file is deliberate:
+#
+# * Pull requests only. A merge lands the exact tree that was already validated, so running
+#   again on `main` would burn minutes to re-prove the same thing.
+# * One required status check, `ci-gate`. It always reports, even when the heavy jobs are
+#   skipped for a documentation-only change, so a required check never hangs pending.
+# * Permissions start empty and are granted per job.
+# * Checks run with `--no-sync` against an environment installed in an explicit step, so a
+#   check can never silently re-resolve dependencies mid-run.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned so a new uv release cannot change dependency resolution mid-review.
+  UV_VERSION: "0.12.22"
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'src/**'
+              - 'tests/**'
+              - 'examples/**'
+              - 'pyproject.toml'
+              - 'ruff.toml'
+              - 'mypy.ini'
+              - '.github/workflows/**'
+            docs:
+              - '**/*.md'
+              - '.markdownlint.json'
+              - '.markdownlint-cli2.jsonc'
+              # docs/internal is encrypted at rest, so there is nothing a linter can read.
+              - '!docs/internal/**'
+
+  check:
+    name: Check (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        # Pinned to an exact release: setup-uv stopped publishing major-version aliases
+        # after v7, and an exact pin is the safer supply-chain choice regardless.
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+
+      - name: Create environment
+        run: uv venv --python ${{ matrix.python-version }}
+
+      - name: Install project
+        run: uv pip install -e ".[dev]"
+
+      - name: Check formatting
+        run: uv run --no-sync ruff format --check .
+
+      - name: Lint
+        run: uv run --no-sync ruff check --output-format=github .
+
+      - name: Typecheck
+        run: uv run --no-sync mypy
+
+      # The hardware tier needs a real camera, so it is deselected here and can never run
+      # accidentally in CI. See ADR-0007.
+      - name: Test
+        run: uv run --no-sync pytest -m "not hardware" --cov --cov-report=term-missing
+
+  docs:
+    name: Lint documentation
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Lint markdown
+        uses: DavidAnson/markdownlint-cli2-action@v24
+
+  ci-gate:
+    # The single required status check. It depends on every other job and fails if any of
+    # them failed, while still succeeding when a job was legitimately skipped because the
+    # pull request did not touch that area.
+    name: ci-gate
+    needs: [changes, check, docs]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Evaluate results
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          if echo "$RESULTS" | grep -qE '"result": "(failure|cancelled)"'; then
+            echo "::error::One or more CI jobs did not succeed."
+            exit 1
+          fi
+          echo "All required jobs succeeded or were skipped."
+

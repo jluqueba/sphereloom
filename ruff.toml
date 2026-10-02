@@ -1,0 +1,46 @@
+# Ruff replaces flake8, isort, pyupgrade and friends with a single tool.
+# Kept in its own file rather than in pyproject.toml so tool configuration stays
+# readable as it grows.
+
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[lint]
+select = [
+  "E",    # pycodestyle errors
+  "W",    # pycodestyle warnings
+  "F",    # pyflakes
+  "I",    # isort
+  "N",    # pep8-naming
+  "UP",   # pyupgrade
+  "B",    # flake8-bugbear
+  "A",    # flake8-builtins
+  "C4",   # flake8-comprehensions
+  "DTZ",  # flake8-datetimez: timezone-aware datetimes only
+  "T20",  # flake8-print: the server speaks MCP on stdout, so printing is banned
+  "PT",   # flake8-pytest-style
+  "RET",  # flake8-return
+  "SIM",  # flake8-simplify
+  "PTH",  # flake8-use-pathlib
+  "ASYNC",# flake8-async
+  "S",    # flake8-bandit
+  "RUF",  # ruff-specific rules
+]
+ignore = [
+  "S101", # assert is the normal idiom in pytest
+]
+
+[lint.per-file-ignores]
+# Tests may use hardcoded bind addresses, fake credentials and sample system paths that
+# would rightly be flagged in production code.
+"tests/**" = ["S104", "S105", "S106", "S108", "S311"]
+
+[lint.isort]
+known-first-party = ["sphereloom"]
+
+[lint.flake8-builtins]
+builtins-allowed-modules = ["logging", "types"]
+
+[format]
+docstring-code-format = true

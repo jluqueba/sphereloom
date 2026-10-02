@@ -1,0 +1,63 @@
+name: Feature request
+description: Suggest an improvement or new capability for SphereLoom.
+title: "feat: "
+labels:
+  - enhancement
+  - needs-triage
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What user problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior you would like SphereLoom to provide.
+    validations:
+      required: true
+  - type: dropdown
+    id: milestone-backend
+    attributes:
+      label: Target milestone or backend
+      options:
+        - OSC Wi-Fi
+        - USB Camera SDK
+        - Media SDK
+        - example agent
+        - tooling & CI
+        - docs
+    validations:
+      required: true
+  - type: dropdown
+    id: vendor-capability
+    attributes:
+      label: Does this require a vendor capability that may not exist?
+      description: For example, OSC does not support live preview, streaming, or exposure adjustment.
+      options:
+        - "No"
+        - "Yes"
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe workarounds or different designs you considered.
+    validations:
+      required: false
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Willingness to contribute
+      options:
+        - I can open a pull request
+        - I can help test
+        - I can help with docs
+        - I cannot contribute right now
+    validations:
+      required: true

@@ -1,0 +1,104 @@
+name: Bug report
+description: Report a reproducible problem in SphereLoom.
+title: "fix: "
+labels:
+  - bug
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve SphereLoom. Do not include secrets, bearer tokens, SSIDs, or personal file paths.
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: Briefly describe the problem.
+      placeholder: Camera status fails after connecting to the camera hotspot.
+    validations:
+      required: true
+  - type: input
+    id: sphereloom-version
+    attributes:
+      label: SphereLoom version
+      placeholder: 0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: Python 3.12.6
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Windows 11, Ubuntu 24.04, etc.
+    validations:
+      required: true
+  - type: input
+    id: camera
+    attributes:
+      label: Camera model and firmware
+      placeholder: Insta360 X5, firmware version ...
+    validations:
+      required: false
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport
+      options:
+        - stdio
+        - HTTP
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: MCP client or agent used
+      placeholder: Claude Desktop, VS Code, custom client, etc.
+    validations:
+      required: false
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: List the exact steps needed to reproduce the issue.
+      placeholder: |
+        1. Join the camera hotspot.
+        2. Start SphereLoom with ...
+        3. Call ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste relevant logs only after redacting SSIDs, tokens, credentials, and personal file paths.
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: no-secrets
+    attributes:
+      label: Secret handling
+      options:
+        - label: I have not pasted secrets, bearer tokens, SSIDs, credentials, or personal file paths.
+          required: true

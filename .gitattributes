@@ -1,0 +1,28 @@
+# Normalise line endings. CI runs on both Linux and Windows, so the repository stores LF
+# and Git converts on checkout where a platform needs it.
+* text=auto eol=lf
+
+# Windows-only scripts must keep CRLF to run reliably under PowerShell on Windows.
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Makefiles require tabs and LF.
+Makefile text eol=lf
+
+# Binary assets must never be converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.mp4 binary
+*.insv binary
+*.insp binary
+*.dng binary
+*.zip binary
+
+# Internal documentation (ADRs, specs, plans, envisioning, process) is encrypted at rest
+# with git-age. Contributors see ciphertext; maintainers with the private key see plaintext
+# in their working tree. Public documentation lives in README.md and docs/DEVELOPER_GUIDE.md.
+docs/internal/** filter=age diff=age merge=age -text
