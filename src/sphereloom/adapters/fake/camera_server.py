@@ -1,0 +1,659 @@
+"""A protocol-faithful fake camera served over real HTTP on loopback.
+
+Why a real HTTP server rather than a mocked client
+--------------------------------------------------
+
+Mocking the HTTP client would test the adapter against our own assumptions. Serving real
+HTTP exercises the parts that actually break in the field: header handling, timeouts,
+streaming, connection reuse, and partial transfers. The adapter cannot tell the difference
+between this and a camera on the other end of a Wi-Fi link, which is the point.
+
+Fidelity
+--------
+
+Response shapes follow the vendor's published protocol documentation: battery is a fraction
+between zero and one, captures complete asynchronously through a polled command identifier,
+and vendor-specific fields keep their underscore prefix. Where a real camera's behaviour is
+known but undocumented, the code says so rather than inventing a detail.
+
+This fake also ships as SphereLoom's demo backend, so anyone can try the server without
+owning a camera.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response, StreamingResponse
+from starlette.routing import Route
+
+from sphereloom.adapters.fake.scenarios import HEALTHY, Scenario
+
+#: A genuine one-pixel JPEG. Downloads therefore produce a file that actually opens, which
+#: matters when verifying that a transfer was byte-exact rather than merely the right size.
+_TINY_JPEG = base64.b64decode(
+    "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRof"
+    "Hh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAAB"
+    "AQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAA/AKp//9k="
+)
+
+#: A valid MP4 file-type box followed by filler. Deliberately not a playable video: tests
+#: care about transfer integrity, and generating real footage would bloat the repository.
+_STUB_MP4 = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + b"\x00" * 2048
+
+DEFAULT_MODEL = "Insta360 X5"
+DEFAULT_FIRMWARE = "v1.0.0-fake"
+DEFAULT_SERIAL = "FAKE0000000000"
+STORAGE_ROOT = "/DCIM/Camera01"
+
+
+@dataclass(slots=True)
+class FakeFile:
+    """One file on the fake camera's card."""
+
+    name: str
+    kind: str
+    captured_at: datetime
+    content: bytes
+    width: int = 0
+    height: int = 0
+    group_id: str | None = None
+
+    @property
+    def size(self) -> int:
+        return len(self.content)
+
+    @property
+    def local_url(self) -> str:
+        return f"{STORAGE_ROOT}/{self.name}"
+
+    def file_url(self, base: str) -> str:
+        return f"{base}{STORAGE_ROOT}/{self.name}"
+
+
+@dataclass(slots=True)
+class PendingCommand:
+    """A capture the camera has accepted but not yet finished.
+
+    Real captures are asynchronous: the command returns an identifier and the caller polls
+    until the state becomes `done`. Completing after a fixed number of polls keeps tests
+    deterministic without anyone sleeping.
+    """
+
+    command_id: str
+    name: str
+    polls_remaining: int
+    results: dict[str, Any]
+
+
+def _default_files() -> list[FakeFile]:
+    """A small, plausible card: two photos and one two-file recording."""
+    base = datetime(2026, 1, 15, 10, 30, tzinfo=UTC)
+    return [
+        FakeFile(
+            name="IMG_20260115_103000_00_001.jpg",
+            kind="image",
+            captured_at=base,
+            content=_TINY_JPEG,
+            width=6080,
+            height=3040,
+        ),
+        FakeFile(
+            name="IMG_20260115_104500_00_002.jpg",
+            kind="image",
+            captured_at=base + timedelta(minutes=15),
+            content=_TINY_JPEG,
+            width=6080,
+            height=3040,
+        ),
+        # One recording produces two files, one per lens. Anything that assumes a single
+        # file per recording breaks on real hardware, so the default fixture includes it.
+        FakeFile(
+            name="VID_20260115_110000_00_003.mp4",
+            kind="video",
+            captured_at=base + timedelta(minutes=30),
+            content=_STUB_MP4,
+            width=5760,
+            height=2880,
+            group_id="003",
+        ),
+        FakeFile(
+            name="VID_20260115_110000_10_003.mp4",
+            kind="video",
+            captured_at=base + timedelta(minutes=30),
+            content=_STUB_MP4,
+            width=5760,
+            height=2880,
+            group_id="003",
+        ),
+    ]
+
+
+@dataclass
+class FakeCameraState:
+    """Everything the fake camera remembers."""
+
+    model: str = DEFAULT_MODEL
+    firmware_version: str = DEFAULT_FIRMWARE
+    serial_number: str = DEFAULT_SERIAL
+    battery_level: float = 0.78
+    total_space: int = 63_900_000_000
+    remaining_space: int = 41_200_000_000
+    card_state: str = "pass"
+    capture_mode: str = "image"
+    photo_stitching: str = "ondevice"
+    video_type: str = "normal"
+    recording_since: datetime | None = None
+    files: list[FakeFile] = field(default_factory=_default_files)
+    next_sequence: int = 100
+
+    @property
+    def is_recording(self) -> bool:
+        return self.recording_since is not None
+
+
+class FakeCamera:
+    """The fake camera. Build an ASGI app with `build_app()`."""
+
+    def __init__(
+        self,
+        *,
+        scenario: Scenario = HEALTHY,
+        state: FakeCameraState | None = None,
+        capture_polls: int = 1,
+    ) -> None:
+        self.scenario = scenario
+        self.state = state or FakeCameraState()
+        self.capture_polls = capture_polls
+        self._pending: dict[str, PendingCommand] = {}
+        self._command_counter = 1000
+        self._commands_failed = 0
+        self._executing = False
+        #: Requests the camera has seen, so tests can assert on protocol discipline such as
+        #: the vendor's "one command in flight" guidance.
+        self.request_log: list[str] = []
+        #: Set when a second command arrives while one is still executing.
+        self.concurrent_command_detected = False
+
+    # ------------------------------------------------------------------ helpers
+
+    def _next_command_id(self) -> str:
+        self._command_counter += 1
+        return f"{self._command_counter:06d}"
+
+    def _next_file_sequence(self) -> int:
+        self.state.next_sequence += 1
+        return self.state.next_sequence
+
+    def _base_url(self, request: Request) -> str:
+        return f"{request.url.scheme}://{request.url.netloc}"
+
+    async def _apply_latency(self) -> None:
+        if self.scenario.latency_seconds > 0:
+            await asyncio.sleep(self.scenario.latency_seconds)
+
+    def _vendor_error(self, name: str, code: str, message: str) -> JSONResponse:
+        """Render an error the way the vendor documents it."""
+        return JSONResponse(
+            {"name": name, "state": "error", "error": {"code": code, "message": message}}
+        )
+
+    def _should_fail_command(self) -> bool:
+        if self._commands_failed < self.scenario.fail_first_n_commands:
+            self._commands_failed += 1
+            return True
+        return False
+
+    # ------------------------------------------------------------------ endpoints
+
+    async def osc_info(self, request: Request) -> Response:
+        self.request_log.append("GET /osc/info")
+        await self._apply_latency()
+
+        if "/osc/info" in self.scenario.failing_paths:
+            return Response("upstream failure", status_code=503)
+
+        return JSONResponse(
+            {
+                "manufacturer": "Arashi Vision",
+                "model": self.state.model,
+                "serialNumber": self.state.serial_number,
+                "firmwareVersion": self.state.firmware_version,
+                "supportUrl": "https://www.insta360.com/",
+                "endpoints": {"httpPort": 80, "httpUpdatesPort": 80},
+                "gps": False,
+                "gyro": True,
+                "uptime": 480,
+                "api": [
+                    "/osc/info",
+                    "/osc/state",
+                    "/osc/checkForUpdates",
+                    "/osc/commands/execute",
+                    "/osc/commands/status",
+                ],
+                "apiLevel": [2],
+                "_sensorModuleType": "Dual_Fisheye",
+                "_vendorVersion": "v1.0_fake",
+            }
+        )
+
+    async def osc_state(self, request: Request) -> Response:
+        self.request_log.append("POST /osc/state")
+        await self._apply_latency()
+
+        if self.scenario.malformed_json:
+            return Response("{not valid json", media_type="application/json")
+
+        card_state = "noSpace" if self.scenario.storage_full else self.state.card_state
+        return JSONResponse(
+            {
+                "fingerprint": "FPR_FAKE_0001",
+                "state": {
+                    "_cardState": card_state,
+                    "batteryLevel": self.state.battery_level,
+                    "storageUri": f"{self._base_url(request)}{STORAGE_ROOT}/",
+                    "_captureStatus": "shooting" if self.state.is_recording else "idle",
+                },
+            }
+        )
+
+    async def osc_execute(self, request: Request) -> Response:
+        await self._apply_latency()
+
+        if self._executing:
+            # The vendor explicitly advises against overlapping commands. Recording the
+            # violation lets a test prove the adapter serialises its calls.
+            self.concurrent_command_detected = True
+
+        self._executing = True
+        try:
+            return await self._dispatch(request)
+        finally:
+            self._executing = False
+
+    async def _dispatch(self, request: Request) -> Response:
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return JSONResponse(
+                {"error": {"code": "invalidParameterValue", "message": "Malformed request."}},
+                status_code=400,
+            )
+
+        name = str(payload.get("name", ""))
+        parameters = payload.get("parameters") or {}
+        self.request_log.append(f"POST /osc/commands/execute {name}")
+
+        if self.scenario.server_error:
+            return Response("Internal Server Error", status_code=500)
+
+        if self.scenario.malformed_json:
+            return Response('{"name": "' + name + '", "state": don', media_type="application/json")
+
+        if self._should_fail_command():
+            return Response("Service Unavailable", status_code=503)
+
+        if self.scenario.unactivated:
+            return self._vendor_error(
+                name,
+                "unactivated",
+                "Please activate your camera in the vendor's official app.",
+            )
+
+        if self.scenario.busy:
+            return self._vendor_error(
+                name, "disabledCommand", "Another capture is currently running."
+            )
+
+        handlers = {
+            "camera.getOptions": self._get_options,
+            "camera.setOptions": self._set_options,
+            "camera.takePicture": self._take_picture,
+            "camera.startCapture": self._start_capture,
+            "camera.stopCapture": self._stop_capture,
+            "camera.listFiles": self._list_files,
+            "camera.delete": self._delete,
+        }
+        handler = handlers.get(name)
+        if handler is None:
+            return self._vendor_error(name, "unknownCommand", f"Unknown command {name!r}.")
+
+        return handler(request, parameters)
+
+    async def osc_status(self, request: Request) -> Response:
+        self.request_log.append("POST /osc/commands/status")
+        await self._apply_latency()
+
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return JSONResponse(
+                {"error": {"code": "invalidParameterValue", "message": "Malformed request."}},
+                status_code=400,
+            )
+
+        command_id = str(payload.get("id", ""))
+        pending = self._pending.get(command_id)
+        if pending is None:
+            return JSONResponse(
+                {
+                    "error": {
+                        "code": "invalidParameterValue",
+                        "message": f"Unknown command id {command_id!r}.",
+                    }
+                },
+                status_code=400,
+            )
+
+        if pending.polls_remaining > 0:
+            pending.polls_remaining -= 1
+            completion = 1.0 - (pending.polls_remaining / max(self.capture_polls, 1))
+            return JSONResponse(
+                {
+                    "name": pending.name,
+                    "state": "inProgress",
+                    "id": pending.command_id,
+                    "progress": {"completion": round(completion, 2)},
+                }
+            )
+
+        del self._pending[command_id]
+        return JSONResponse({"name": pending.name, "state": "done", "results": pending.results})
+
+    async def osc_download(self, request: Request) -> Response:
+        name = request.path_params["filename"]
+        self.request_log.append(f"GET {STORAGE_ROOT}/{name}")
+        await self._apply_latency()
+
+        match = next((f for f in self.state.files if f.name == name), None)
+        if match is None:
+            return Response("Not Found", status_code=404)
+
+        content = match.content
+        media_type = "image/jpeg" if match.kind == "image" else "video/mp4"
+
+        if self.scenario.truncate_downloads:
+            # Declare the full length, send half, then abort. A server cannot politely
+            # under-deliver on Content-Length: the HTTP layer refuses. Real truncation
+            # therefore always arrives as a broken connection, which is the lesson the
+            # download worker has to learn -- the transport will not tell you the file is
+            # incomplete, so the byte count must be verified.
+            async def truncated() -> AsyncIterator[bytes]:
+                yield content[: len(content) // 2]
+                message = "connection lost after a partial transfer"
+                raise ConnectionResetError(message)
+
+            return StreamingResponse(
+                truncated(),
+                media_type=media_type,
+                headers={"Content-Length": str(len(content))},
+            )
+
+        if self.scenario.drop_downloads:
+            # The same failure, earlier in the transfer.
+            async def dropped() -> AsyncIterator[bytes]:
+                yield content[: len(content) // 3]
+                message = "connection dropped mid-transfer"
+                raise ConnectionResetError(message)
+
+            return StreamingResponse(
+                dropped(),
+                media_type=media_type,
+                headers={"Content-Length": str(len(content))},
+            )
+
+        return Response(content, media_type=media_type)
+
+    # ------------------------------------------------------------------ commands
+
+    def _get_options(self, request: Request, parameters: dict[str, Any]) -> Response:
+        requested = parameters.get("optionNames") or []
+        available: dict[str, Any] = {
+            "captureMode": self.state.capture_mode,
+            "captureModeSupport": ["image", "video"],
+            "photoStitching": self.state.photo_stitching,
+            "photoStitchingSupport": ["none", "ondevice"],
+            "totalSpace": self.state.total_space,
+            "remainingSpace": 0 if self.scenario.storage_full else self.state.remaining_space,
+            "exposureDelay": 0,
+            "exposureDelaySupport": [0, 3, 5, 10],
+            "whiteBalance": "auto",
+            "whiteBalanceSupport": ["auto", "daylight", "cloudy", "incandescent"],
+            "fileFormat": {"type": "jpeg", "width": 6080, "height": 3040},
+            "_videoType": self.state.video_type,
+            "_videoTypeSupport": ["normal", "timelapse", "hdr"],
+            "_topBottomCorrection": "off",
+            "_MuteEnable": False,
+            "_batteryCapacity": int(self.state.battery_level * 100),
+            "_sysTimestamp": 1767225600,
+        }
+        selected = (
+            {name: available[name] for name in requested if name in available}
+            if requested
+            else available
+        )
+        return JSONResponse(
+            {"name": "camera.getOptions", "state": "done", "results": {"options": selected}}
+        )
+
+    def _set_options(self, request: Request, parameters: dict[str, Any]) -> Response:
+        options = parameters.get("options") or {}
+
+        # The vendor documents no exposure control over this protocol. Rejecting it here
+        # keeps the fake honest: if the adapter ever claims to support it, a test fails.
+        unsupported = {"iso", "shutterSpeed", "exposureProgram"} & set(options)
+        if unsupported:
+            return self._vendor_error(
+                "camera.setOptions",
+                "invalidParameterName",
+                f"Option(s) not supported over this protocol: {', '.join(sorted(unsupported))}.",
+            )
+
+        if "captureMode" in options:
+            mode = str(options["captureMode"])
+            if mode not in {"image", "video"}:
+                return self._vendor_error(
+                    "camera.setOptions",
+                    "invalidParameterValue",
+                    f"captureMode {mode!r} is not supported.",
+                )
+            self.state.capture_mode = mode
+
+        if "photoStitching" in options:
+            self.state.photo_stitching = str(options["photoStitching"])
+        if "_videoType" in options:
+            self.state.video_type = str(options["_videoType"])
+
+        return JSONResponse({"name": "camera.setOptions", "state": "done"})
+
+    def _take_picture(self, request: Request, parameters: dict[str, Any]) -> Response:
+        if self.state.capture_mode != "image":
+            return self._vendor_error(
+                "camera.takePicture",
+                "disabledCommand",
+                "Currently camera is not working in image mode",
+            )
+        if self.scenario.storage_full:
+            return self._vendor_error(
+                "camera.takePicture", "noFreeSpace", "There is no free space on the card."
+            )
+
+        sequence = self._next_file_sequence()
+        captured = FakeFile(
+            name=f"IMG_20260115_120000_00_{sequence:03d}.jpg",
+            kind="image",
+            captured_at=datetime(2026, 1, 15, 12, 0, tzinfo=UTC),
+            content=_TINY_JPEG,
+            width=6080,
+            height=3040,
+        )
+        self.state.files.append(captured)
+
+        base = self._base_url(request)
+        command_id = self._next_command_id()
+        self._pending[command_id] = PendingCommand(
+            command_id=command_id,
+            name="camera.takePicture",
+            polls_remaining=self.capture_polls,
+            results={
+                "fileUrl": captured.file_url(base),
+                "_fileGroup": [captured.file_url(base)],
+                "_localFileGroup": [captured.local_url],
+            },
+        )
+        return JSONResponse(
+            {
+                "name": "camera.takePicture",
+                "state": "inProgress",
+                "id": command_id,
+                "progress": {"completion": 0},
+            }
+        )
+
+    def _start_capture(self, request: Request, parameters: dict[str, Any]) -> Response:
+        if self.state.capture_mode != "video":
+            return self._vendor_error(
+                "camera.startCapture",
+                "disabledCommand",
+                "Currently camera is not working in video mode",
+            )
+        if self.state.is_recording:
+            return self._vendor_error(
+                "camera.startCapture", "disabledCommand", "A recording is already running."
+            )
+        if self.scenario.storage_full:
+            return self._vendor_error(
+                "camera.startCapture", "noFreeSpace", "There is no free space on the card."
+            )
+
+        self.state.recording_since = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
+        return JSONResponse({"name": "camera.startCapture", "state": "done"})
+
+    def _stop_capture(self, request: Request, parameters: dict[str, Any]) -> Response:
+        if not self.state.is_recording:
+            return self._vendor_error(
+                "camera.stopCapture", "disabledCommand", "No recording is running."
+            )
+
+        self.state.recording_since = None
+        sequence = self._next_file_sequence()
+        group = f"{sequence:03d}"
+        # A recording yields one file per lens. Returning both is what a real camera does.
+        produced = [
+            FakeFile(
+                name=f"VID_20260115_120000_{lens}_{group}.mp4",
+                kind="video",
+                captured_at=datetime(2026, 1, 15, 12, 0, tzinfo=UTC),
+                content=_STUB_MP4,
+                width=5760,
+                height=2880,
+                group_id=group,
+            )
+            for lens in ("00", "10")
+        ]
+        self.state.files.extend(produced)
+
+        base = self._base_url(request)
+        return JSONResponse(
+            {
+                "name": "camera.stopCapture",
+                "state": "done",
+                "results": {
+                    "fileUrls": [f.file_url(base) for f in produced],
+                    "_localFileUrls": [f.local_url for f in produced],
+                },
+            }
+        )
+
+    def _list_files(self, request: Request, parameters: dict[str, Any]) -> Response:
+        file_type = str(parameters.get("fileType", "all"))
+        entry_count = int(parameters.get("entryCount", 10))
+        start_position = int(parameters.get("startPosition", 0))
+
+        if file_type == "all":
+            selected = list(self.state.files)
+        else:
+            selected = [f for f in self.state.files if f.kind == file_type]
+
+        # Newest first, which is the order a gallery is useful in.
+        selected.sort(key=lambda f: (f.captured_at, f.name), reverse=True)
+        window = selected[start_position : start_position + entry_count]
+
+        base = self._base_url(request)
+        entries = [
+            {
+                "name": f.name,
+                "fileUrl": f.file_url(base),
+                "_localFileUrl": f.local_url,
+                "size": f.size,
+                "width": f.width,
+                "height": f.height,
+                "dateTimeZone": f.captured_at.strftime("%Y:%m:%d %H:%M:%S+00:00"),
+                "isProcessed": True,
+                "previewUrl": "",
+            }
+            for f in window
+        ]
+        return JSONResponse(
+            {
+                "name": "camera.listFiles",
+                "state": "done",
+                "results": {"entries": entries, "totalEntries": len(selected)},
+            }
+        )
+
+    def _delete(self, request: Request, parameters: dict[str, Any]) -> Response:
+        requested = parameters.get("fileUrls") or []
+        known = {f.name: f for f in self.state.files}
+
+        missing: list[str] = []
+        removable: list[FakeFile] = []
+        for url in requested:
+            name = str(url).rsplit("/", 1)[-1]
+            if name in known:
+                removable.append(known[name])
+            else:
+                missing.append(str(url))
+
+        if missing:
+            return JSONResponse(
+                {
+                    "error": {
+                        "code": "invalidParameterValue",
+                        "message": f"Parameter {missing[0]} doesn't exist.",
+                    }
+                }
+            )
+
+        for target in removable:
+            self.state.files.remove(target)
+
+        return JSONResponse({"name": "camera.delete", "state": "done", "results": {"fileUrls": []}})
+
+    # ------------------------------------------------------------------ assembly
+
+    def build_app(self) -> Starlette:
+        """Build the ASGI application serving this camera."""
+        return Starlette(
+            routes=[
+                Route("/osc/info", self.osc_info, methods=["GET"]),
+                Route("/osc/state", self.osc_state, methods=["POST"]),
+                Route("/osc/commands/execute", self.osc_execute, methods=["POST"]),
+                Route("/osc/commands/status", self.osc_status, methods=["POST"]),
+                Route(f"{STORAGE_ROOT}/{{filename}}", self.osc_download, methods=["GET"]),
+            ]
+        )
+
+    def with_scenario(self, scenario: Scenario) -> FakeCamera:
+        """Return a camera sharing this state but misbehaving differently."""
+        return FakeCamera(
+            scenario=replace(scenario), state=self.state, capture_polls=self.capture_polls
+        )
