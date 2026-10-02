@@ -6,6 +6,11 @@ target-version = "py312"
 line-length = 100
 src = ["src", "tests"]
 
+# Internal design documents are encrypted at rest, so in a checkout without the key they
+# are ciphertext rather than text. Any tool that walks the tree has to be told, which is a
+# recorded cost of that decision rather than a surprise. See ADR-0014.
+extend-exclude = ["docs/internal"]
+
 [lint]
 select = [
   "E",    # pycodestyle errors
