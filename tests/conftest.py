@@ -22,14 +22,46 @@ from sphereloom.security.workspace import Workspace
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
+HARDWARE_OPT_IN = "SPHERELOOM_ENABLE_HARDWARE_TESTS"
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Skip the hardware tier unless it was explicitly asked for.
+
+    The marker alone is not enough. A plain `pytest -m hardware` would otherwise reach for
+    whatever camera happens to be on the network, which is both surprising and, since these
+    tests can capture and download, not harmless. The opt-in is checked here rather than in
+    a fixture because `_isolate_settings_env` clears every SPHERELOOM_ variable before
+    fixtures run, so by then the flag would always look unset.
+    """
+    if os.environ.get(HARDWARE_OPT_IN, "").strip() in {"1", "true", "True"}:
+        return
+
+    skip = pytest.mark.skip(
+        reason=f"Hardware tests need a real camera and {HARDWARE_OPT_IN}=1.",
+    )
+    for item in items:
+        if item.get_closest_marker("hardware") is not None:
+            item.add_marker(skip)
+
 
 @pytest.fixture(autouse=True)
-def _block_outbound_network(monkeypatch: pytest.MonkeyPatch) -> None:
+def _block_outbound_network(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Fail any test that opens a socket to something other than loopback.
 
     The fake camera runs on loopback, so legitimate tests are unaffected. A test that
     reached a real camera on someone's desk would otherwise pass locally and fail in CI.
+
+    Tests marked `hardware` are exempt: reaching a real camera is the entire point of that
+    tier. They are additionally gated by `pytest_collection_modifyitems` above, which skips
+    them altogether unless the opt-in variable is set, so exempting them here cannot by
+    itself let a test reach the network.
     """
+    if request.node.get_closest_marker("hardware") is not None:
+        return
+
     real_connect = socket.socket.connect
 
     def guarded_connect(self: socket.socket, address: object) -> None:

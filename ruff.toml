@@ -6,6 +6,11 @@ target-version = "py312"
 line-length = 100
 src = ["src", "tests"]
 
+# Internal design documents are encrypted at rest, so in a checkout without the key they
+# are ciphertext rather than text. Any tool that walks the tree has to be told, which is a
+# recorded cost of that decision rather than a surprise. See ADR-0014.
+extend-exclude = ["docs/internal"]
+
 [lint]
 select = [
   "E",    # pycodestyle errors
@@ -35,6 +40,9 @@ ignore = [
 # Tests may use hardcoded bind addresses, fake credentials and sample system paths that
 # would rightly be flagged in production code.
 "tests/**" = ["S104", "S105", "S106", "S108", "S311"]
+# Maintainer scripts are command-line tools, so writing to the console is their job. The
+# server itself still may not print: stdout there belongs to the MCP protocol.
+"scripts/**" = ["T20"]
 
 [lint.isort]
 known-first-party = ["sphereloom"]

@@ -55,3 +55,8 @@ sdk/
 # Ignoring the lock also prevents a lockfile generated behind a private package mirror from
 # leaking internal index URLs into a public repository.
 uv.lock
+
+# Raw, un-redacted camera captures. Only redacted fixtures under tests/fixtures/ are
+# committed; see docs/internal/process/recording-camera-fixtures.md.
+*.raw.json
+captures/
