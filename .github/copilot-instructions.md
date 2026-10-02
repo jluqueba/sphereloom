@@ -185,6 +185,16 @@
 - Workflows should set `timeout-minutes`.
 - Keep Dependabot updates grouped and conventional-commit friendly.
 
+## Pull request completion
+
+- Copilot code review runs on every push to an open pull request (`review_on_push`).
+- A pull request is ready to merge only when the **most recent** review cycle produced **no new findings**.
+- Resolving one review's findings and merging on green CI is not sufficient: the fixing push starts a new review, which may surface new problems, including ones the fix introduced.
+- After pushing fixes, wait for the new review, read it, and repeat until a cycle comes back clean.
+- Compare review and comment timestamps against the last push using `gh api repos/<owner>/<repo>/pulls/<n>/reviews` and `.../comments`. The history is what proves a cycle completed after the change.
+- Resolve review threads only after the findings are actually addressed, never to unblock a merge.
+- Automated review cannot read `docs/internal/**` because it is encrypted; those changes need a maintainer with the key.
+
 ## Authoritative artifacts
 
 Read these before proposing design changes; they override any summary in this file.

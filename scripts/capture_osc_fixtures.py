@@ -44,6 +44,18 @@ import httpx
 DEFAULT_BASE_URL = "http://192.168.42.1"
 OUTPUT_DIR = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "osc"
 
+#: Every fixture this script can produce. Used to clear stale files from a previous run so
+#: the manifest never describes a capture that did not happen in this session.
+FIXTURE_NAMES = (
+    "info",
+    "state",
+    "get_options",
+    "list_files_image",
+    "list_files_video",
+    "take_picture",
+    "take_picture_result",
+)
+
 #: How long to wait for a capture to report completion before giving up on recording its
 #: terminal response. Generous, because a high-resolution still can take a while to write.
 CAPTURE_DEADLINE_SECONDS = 60.0
@@ -310,6 +322,58 @@ def capture(base_url: str, *, take_photo: bool, timeout: float) -> dict[str, Any
     return captured
 
 
+def write_outputs(
+    redacted: dict[str, Any], output_dir: Path, *, redacted_keys: set[str] | None = None
+) -> list[str]:
+    """Write fixtures and the manifest, clearing anything this run did not produce.
+
+    Returns the names of stale files removed. Separated from `main` so the output stage can
+    be tested without a camera, and so the staleness rule cannot drift from what ships.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    info = redacted.get("info", {})
+    model = str(info.get("model", "unknown")) if isinstance(info, dict) else "unknown"
+    firmware = str(info.get("firmwareVersion", "unknown")) if isinstance(info, dict) else "unknown"
+
+    # Clear fixtures this run did not produce. A read-only run after an earlier
+    # --capture-photo run would otherwise leave take_picture_result.json in place, and the
+    # fresh manifest would silently attribute that old response to the current firmware and
+    # capture date. Only files this script generates are removed; anything else is left
+    # alone, since the directory may hold fixtures added by hand.
+    removed: list[str] = []
+    for name in FIXTURE_NAMES:
+        if name in redacted:
+            continue
+        stale = output_dir / f"{name}.json"
+        if stale.exists():
+            stale.unlink()
+            removed.append(stale.name)
+
+    for name, payload in redacted.items():
+        destination = output_dir / f"{name}.json"
+        destination.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+    manifest = {
+        "camera_model": model,
+        "firmware_version": firmware,
+        "recorded_at": datetime.now(UTC).strftime("%Y-%m-%d"),
+        "fixtures": sorted(redacted),
+        "redacted_keys": sorted(redacted_keys or set()),
+        "note": (
+            "Recorded from a real camera and redacted by scripts/capture_osc_fixtures.py. "
+            "Serial numbers, thumbnails and filename dates are removed or normalised. "
+            "Never commit an un-redacted capture."
+        ),
+    }
+    (output_dir / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return removed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Record redacted OSC protocol fixtures from a real camera.",
@@ -339,32 +403,16 @@ def main(argv: list[str] | None = None) -> int:
     found: set[str] = set()
     redacted = {name: redact(payload, found=found) for name, payload in captured.items()}
 
+    removed = write_outputs(redacted, args.output_dir, redacted_keys=found)
+
+    for name in sorted(redacted):
+        print(f"  wrote {name}.json", file=sys.stderr)
+    for name in removed:
+        print(f"  removed stale {name}", file=sys.stderr)
+
     info = redacted.get("info", {})
     model = str(info.get("model", "unknown")) if isinstance(info, dict) else "unknown"
     firmware = str(info.get("firmwareVersion", "unknown")) if isinstance(info, dict) else "unknown"
-
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    for name, payload in redacted.items():
-        destination = args.output_dir / f"{name}.json"
-        destination.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        print(f"  wrote {destination.name}", file=sys.stderr)
-
-    manifest = {
-        "camera_model": model,
-        "firmware_version": firmware,
-        "recorded_at": datetime.now(UTC).strftime("%Y-%m-%d"),
-        "redacted_keys": sorted(found),
-        "note": (
-            "Recorded from a real camera and redacted by scripts/capture_osc_fixtures.py. "
-            "Serial numbers, thumbnails and filename dates are removed or normalised. "
-            "Never commit an un-redacted capture."
-        ),
-    }
-    (args.output_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
 
     print(
         f"\nCaptured {model}, firmware {firmware}."

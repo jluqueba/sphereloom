@@ -75,6 +75,19 @@ SUPPORTED_TOP_BOTTOM_CORRECTION = ("on", "off")
 PROTOCOL_UNSUPPORTED_OPTIONS = frozenset({"iso", "shutterSpeed", "exposureProgram"})
 
 
+def _is_accepted(value: Any, candidate: Any) -> bool:
+    """Whether a supplied option value matches an accepted one, including its JSON type.
+
+    Plain equality is not enough. In Python `False == 0` and `1 == True`, so a request
+    sending `exposureDelay: false` would match the accepted value `0`, be stored unchanged,
+    and then come back out of `getOptions` as a boolean where a number belongs. The fake
+    would have blessed a malformed request that a real camera would reject.
+    """
+    if isinstance(value, bool) != isinstance(candidate, bool):
+        return False
+    return bool(value == candidate)
+
+
 @dataclass(slots=True)
 class FakeFile:
     """One file on the fake camera's card."""
@@ -555,7 +568,7 @@ class FakeCamera:
         # worse than a rejected one, because the caller cannot tell what state it left.
         for name, value in options.items():
             _, allowed = self._WRITABLE_OPTIONS[name]
-            if value not in allowed:
+            if not any(_is_accepted(value, candidate) for candidate in allowed):
                 return self._vendor_error(
                     "camera.setOptions",
                     "invalidParameterValue",

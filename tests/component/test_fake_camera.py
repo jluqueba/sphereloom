@@ -587,6 +587,48 @@ def test_unknown_options_are_rejected(client: httpx.Client) -> None:
     assert body["error"]["code"] == "invalidParameterName"
 
 
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        # In Python `False == 0`, so a naive membership test would accept this against the
+        # accepted value 0, store the boolean, and hand back the wrong JSON type.
+        ("exposureDelay", False),
+        ("exposureDelay", True),
+        # And `1 == True`, so the mirror case has to be rejected too.
+        ("_MuteEnable", 1),
+        ("_MuteEnable", 0),
+    ],
+)
+def test_a_value_of_the_wrong_json_type_is_rejected(
+    client: httpx.Client, option: str, value: object
+) -> None:
+    """Type confusion must not pass, or the fake blesses a malformed adapter request."""
+    body = _execute(client, "camera.setOptions", options={option: value})
+
+    assert body["state"] == "error"
+    assert body["error"]["code"] == "invalidParameterValue"
+
+
+def test_a_rejected_type_leaves_the_option_untouched(client: httpx.Client) -> None:
+    before = _execute(client, "camera.getOptions", optionNames=["_MuteEnable"])
+
+    _execute(client, "camera.setOptions", options={"_MuteEnable": 1})
+
+    after = _execute(client, "camera.getOptions", optionNames=["_MuteEnable"])
+    assert after["results"]["options"]["_MuteEnable"] is False
+    assert after["results"]["options"] == before["results"]["options"]
+
+
+def test_correctly_typed_values_are_still_accepted(client: httpx.Client) -> None:
+    """The type check must not become so strict that valid requests start failing."""
+    assert _execute(client, "camera.setOptions", options={"_MuteEnable": True})["state"] == "done"
+    assert _execute(client, "camera.setOptions", options={"exposureDelay": 5})["state"] == "done"
+
+    body = _execute(client, "camera.getOptions", optionNames=["_MuteEnable", "exposureDelay"])
+    assert body["results"]["options"]["_MuteEnable"] is True
+    assert body["results"]["options"]["exposureDelay"] == 5
+
+
 def test_read_only_options_are_rejected(client: httpx.Client) -> None:
     body = _execute(client, "camera.setOptions", options={"totalSpace": 1})
 
