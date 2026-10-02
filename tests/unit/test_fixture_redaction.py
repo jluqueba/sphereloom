@@ -11,6 +11,7 @@ camera output is used.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -225,3 +226,48 @@ def test_file_url_lists_are_normalised() -> None:
     assert all("20260817" not in url for url in cleaned["fileUrls"])
     assert all(url.endswith(".mp4") for url in cleaned["fileUrls"])
     assert len(cleaned["fileUrls"]) == 2
+
+
+def test_a_stale_optional_fixture_is_removed(tmp_path: Path) -> None:
+    """A fixture from an earlier session must not be attributed to this one.
+
+    A read-only run after an earlier `--capture-photo` run would otherwise leave the old
+    capture response in place while writing a fresh manifest, quietly claiming that response
+    came from the current firmware on the current date.
+    """
+    output = tmp_path / "osc"
+    output.mkdir()
+    stale = output / "take_picture_result.json"
+    stale.write_text('{"from": "an earlier session"}', encoding="utf-8")
+
+    captured = {"info": {"model": "Example X5", "firmwareVersion": "v1.2.34"}}
+    _write_fixtures(captured, output)
+
+    assert not stale.exists()
+
+
+def test_unrelated_files_are_left_alone(tmp_path: Path) -> None:
+    """Only fixtures this script generates are removed; hand-added files are not ours."""
+    output = tmp_path / "osc"
+    output.mkdir()
+    handmade = output / "notes-from-the-maintainer.json"
+    handmade.write_text("{}", encoding="utf-8")
+
+    _write_fixtures({"info": {"model": "Example X5"}}, output)
+
+    assert handmade.exists()
+
+
+def test_the_manifest_lists_the_fixtures_actually_written(tmp_path: Path) -> None:
+    output = tmp_path / "osc"
+    output.mkdir()
+
+    _write_fixtures({"info": {"model": "Example X5"}, "state": {}}, output)
+
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["fixtures"] == ["info", "state"]
+
+
+def _write_fixtures(captured: dict[str, Any], output: Path) -> None:
+    """Drive the script's output stage directly, without needing a camera."""
+    capture_osc_fixtures.write_outputs(captured, output)

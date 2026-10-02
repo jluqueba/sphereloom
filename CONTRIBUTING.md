@@ -84,10 +84,29 @@ Before opening a PR, make sure:
 - Ruff, mypy strict, and pytest pass locally when available.
 - Documentation and `CHANGELOG.md` are updated for user-visible changes.
 - No GPL-licensed dependency was added.
-- No vendor SDK binaries were committed.
+- No Insta360 SDK binaries were committed.
 - The PR title follows Conventional Commits.
 
 The repository uses a single required status check named `ci-gate`. The CI design uses change detection so documentation-only PRs can skip heavy jobs while the required gate still reports success. PRs are squash-merged using the PR title.
+
+### Automated review must settle before merging
+
+Copilot code review is configured as a branch ruleset with `review_on_push`, so **every push to an open PR triggers a new review**. That makes the merge condition easy to get wrong:
+
+> A PR is ready to merge only when the **most recent** review cycle produced **no new findings**.
+
+Resolving the findings from one review and merging as soon as CI turns green is not enough. The push that fixed those findings starts another review, and that review can surface new ones — including problems introduced by the fix itself.
+
+The sequence to follow:
+
+1. Push the fixes.
+2. Wait for CI **and** for the new review to be posted.
+3. Read the new review. If it has findings, fix them and return to step 1.
+4. Only when a full cycle comes back clean, resolve the threads and merge.
+
+Check with `gh api repos/jluqueba/sphereloom/pulls/<n>/reviews` and `.../comments`, comparing timestamps against your last push. The review UI shows the latest state; the API shows the history, which is what tells you whether a cycle completed after your change.
+
+Note that automated review cannot read `docs/internal/**`, which is encrypted. Changes there are reviewed by a maintainer with the key.
 
 ## Code standards
 
