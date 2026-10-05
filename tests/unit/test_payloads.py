@@ -7,6 +7,7 @@ twice before, and only one copy was correct, which is why it now lives in one pl
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import pytest
@@ -214,3 +215,34 @@ def test_an_ordinary_scalar_still_renders(value: Any) -> None:
 
 def test_an_integer_within_the_limit_is_not_truncated() -> None:
     assert bounded_text(10**60, 64) == str(10**60)
+
+
+def test_whitespace_collapsing_does_not_materialise_the_whole_string() -> None:
+    """`" ".join(value.split())` built every token before the limit applied.
+
+    Eight megabytes of short words became millions of objects on an error path. The guard
+    is the time taken: the result was always bounded, the work was not.
+    """
+    huge = "ab " * 3_000_000
+
+    started = time.monotonic()
+    result = bounded_text(huge, 64)
+    elapsed = time.monotonic() - started
+
+    assert len(result) <= 65
+    assert elapsed < 1.0
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("  hello   world  ", "hello world"),
+        ("one\ttwo\nthree", "one two three"),
+        ("", ""),
+        ("   ", ""),
+        ("single", "single"),
+    ],
+)
+def test_whitespace_collapsing_matches_the_obvious_implementation(raw: str, expected: str) -> None:
+    """The fast path must not change behaviour, only the work done to get there."""
+    assert bounded_text(raw, 200) == expected

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -197,3 +198,19 @@ def test_a_name_that_fits_with_its_temporary_file_is_written(
         temp_path.write_bytes(b"data")
 
     assert destination.read_bytes() == b"data"
+
+
+def test_an_enormous_raw_path_is_rejected_before_it_is_scanned(workspace: Workspace) -> None:
+    """The limit ran after `strip()` copied the string and `set()` scanned every character.
+
+    The argument comes from a tool call, so that work happened before the limit it
+    violates applied. The guard is the time taken, not only the error.
+    """
+    huge = "a" * 50_000_000
+
+    started = time.monotonic()
+    with pytest.raises(PathJailError, match="longer than"):
+        workspace.resolve(huge)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0

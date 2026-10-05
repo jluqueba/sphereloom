@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import time
 from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 import pytest
@@ -977,7 +978,8 @@ async def test_an_interrupted_download_maps_to_the_taxonomy() -> None:
     assert "interrupted" in caught.value.message.lower()
 
 
-async def test_a_stalled_download_maps_to_the_timeout_taxonomy() -> None:
+async def test_a_download_that_never_starts_maps_to_the_timeout_taxonomy() -> None:
+    """The response itself is late, so the timeout fires in `send`, before any body."""
     camera = FakeCamera(scenario=scenarios.Scenario(latency_seconds=2.0))
     with run_fake_camera(camera) as base_url:
         http = OscHttpClient(base_url, read_timeout=0.2)
@@ -985,6 +987,29 @@ async def test_a_stalled_download_maps_to_the_timeout_taxonomy() -> None:
             with pytest.raises(OperationTimeoutError):
                 async with http.stream("/DCIM/Camera01/IMG_20260115_103000_00_001.jpg"):
                     pass  # pragma: no cover - the context manager raises on entry
+        finally:
+            await http.aclose()
+
+
+async def test_a_download_that_stalls_mid_body_maps_to_the_timeout_taxonomy() -> None:
+    """Headers and one chunk arrive, then the camera goes quiet.
+
+    The caller is already iterating the body, so the timeout is thrown back in at the
+    `yield` inside the streaming context manager. That is a different branch from a
+    response that is merely slow to start, and without it a raw httpx timeout escapes.
+    """
+    camera = FakeCamera(scenario=scenarios.STALLED_DOWNLOAD)
+    with run_fake_camera(camera) as base_url:
+        http = OscHttpClient(base_url, read_timeout=0.3)
+
+        async def consume() -> None:
+            async with http.stream("/DCIM/Camera01/IMG_20260115_103000_00_001.jpg") as response:
+                async for _ in response.aiter_bytes():
+                    pass
+
+        try:
+            with pytest.raises(OperationTimeoutError):
+                await consume()
         finally:
             await http.aclose()
 
@@ -1012,3 +1037,17 @@ async def test_a_malformed_file_url_is_reported_not_crashed(client: OscHttpClien
     with pytest.raises(InvalidArgumentError):
         async with client.stream("http://[not-a-valid-host/file.jpg"):
             pass  # pragma: no cover - the context manager raises on entry
+
+
+@pytest.mark.parametrize("value", [["a"], {"a": 1}, 5, None, True])
+async def test_a_non_string_file_url_is_mapped_to_the_taxonomy(value: Any) -> None:
+    """`httpx.URL` raises TypeError, not ValueError, for a non-string.
+
+    A malformed device payload could otherwise escape as a raw exception.
+    """
+    http = OscHttpClient("http://192.168.42.1")
+    try:
+        with pytest.raises(InvalidArgumentError):
+            http._validated_url(value)
+    finally:
+        await http.aclose()

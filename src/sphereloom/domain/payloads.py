@@ -1,23 +1,27 @@
-"""Rendering untrusted payloads safely for errors and logs.
+"""Handling untrusted payloads safely: decoding them, and rendering them for errors and logs.
 
-Device responses end up in error envelopes and log records. Two things must hold, and both
-have been defects in this repository:
+Device responses are decoded, then end up in error envelopes and log records. Three things
+must hold, and all three have been defects in this repository:
 
-1. **The result must be bounded.** Bounding string values alone is not enough: a wide
+1. **Decoding must refuse what JSON does not allow.** Python's decoder accepts `NaN` and
+   `Infinity`, and renders an overflowing literal such as `1e400` as `inf`. A value that
+   defeats every numeric comparison must not reach a domain model.
+2. **The result must be bounded.** Bounding string values alone is not enough: a wide
    object of short values, one enormous key, or deep nesting each flood the output just as
    effectively, and per-level limits multiply rather than add.
-2. **The result must be JSON-serialisable by construction.** An error envelope that cannot
+3. **The result must be JSON-serialisable by construction.** An error envelope that cannot
    be serialised turns a reported failure into an unreported crash, which is the one thing
    the error path must never do.
 
-This lives in the domain layer and is shared, because the same logic existed in two places
-and only one of them was right.
+This lives in the domain layer and is shared, because every part of it has at some point
+existed in two places with only one of them correct.
 """
 
 from __future__ import annotations
 
+import json
 import math
-from typing import Any
+from typing import Any, NoReturn
 
 #: Longest string preserved verbatim.
 MAX_STRING_LENGTH = 200
@@ -41,6 +45,40 @@ ELLIPSIS = "…"
 MALFORMED = "[malformed]"
 
 
+def strict_json_loads(data: bytes | str) -> Any:
+    """Decode JSON, refusing values that Python accepts but the JSON format does not.
+
+    Python's decoder accepts the bare constants `NaN`, `Infinity` and `-Infinity`, and
+    quietly turns an overflowing literal such as `1e400` into `inf`. Neither is valid JSON
+    and no documented command returns either. Both must be refused at the point of decode:
+    a value that defeats every numeric comparison must not reach a domain model, and one
+    that cannot be re-serialised must not reach a log record.
+
+    Raises:
+        ValueError: for malformed JSON, and for any non-finite number.
+        RecursionError: for input nested deeply enough to exhaust the decoder.
+    """
+    return json.loads(data, parse_constant=_reject_non_finite, parse_float=_finite_float)
+
+
+def _reject_non_finite(constant: str) -> NoReturn:
+    message = f"The payload contains the non-finite JSON constant {constant!r}."
+    raise ValueError(message)
+
+
+def _finite_float(literal: str) -> float:
+    """Refuse number literals that overflow to infinity.
+
+    `parse_constant` only ever sees the bare tokens, so a well-formed literal such as
+    `1e400` bypasses it completely.
+    """
+    value = float(literal)
+    if not math.isfinite(value):
+        message = f"The payload contains the number literal {literal!r}, which overflows."
+        raise ValueError(message)
+    return value
+
+
 def bounded_text(value: Any, limit: int = MAX_STRING_LENGTH) -> str:
     """Render a scalar within a bound, refusing shapes that would allocate first.
 
@@ -50,7 +88,7 @@ def bounded_text(value: Any, limit: int = MAX_STRING_LENGTH) -> str:
     CPython raises above 4300 digits rather than render it.
     """
     if isinstance(value, str):
-        return _truncate(" ".join(value.split()), limit)
+        return _truncate(_collapse_whitespace(value, limit), limit)
     if value is None:
         return ""
     if isinstance(value, bool | float):
@@ -64,6 +102,33 @@ def bounded_text(value: Any, limit: int = MAX_STRING_LENGTH) -> str:
 
 def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit] + ELLIPSIS
+
+
+def _collapse_whitespace(value: str, limit: int) -> str:
+    """Collapse runs of whitespace, stopping once `limit` characters are settled.
+
+    `" ".join(value.split())` would materialise every token of the string and then a full
+    normalised copy, all before the limit applies: eight megabytes of short words becomes
+    millions of Python objects on an error path. Walking the string and stopping early
+    bounds the work as well as the result.
+
+    One character beyond the limit is kept so the caller can still tell whether the value
+    was truncated.
+    """
+    out: list[str] = []
+    pending_space = False
+    for char in value:
+        if char.isspace():
+            # Leading whitespace produces no separator, matching `split()`.
+            pending_space = bool(out)
+            continue
+        if pending_space:
+            out.append(" ")
+            pending_space = False
+        out.append(char)
+        if len(out) > limit:
+            break
+    return "".join(out)
 
 
 def bounded_payload(

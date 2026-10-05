@@ -72,6 +72,12 @@ class Scenario:
     #: Close the connection part-way through a download.
     drop_downloads: bool = False
 
+    #: Send the headers and one chunk of a download, then stall indefinitely. The caller is
+    #: already iterating the body when the read timeout fires, so the failure surfaces at
+    #: the `yield` inside the streaming context manager rather than at `send`. That is a
+    #: separate mapping branch, and a response that merely arrives late never reaches it.
+    stall_downloads_after_headers: bool = False
+
     #: Fail this many command executions before starting to succeed. Used to prove that
     #: retry and recovery work, rather than only that failure is detected.
     fail_first_n_commands: int = 0
@@ -101,4 +107,5 @@ DEEPLY_NESTED_JSON = Scenario(deeply_nested_json=True)
 ARRAY_PAYLOAD = Scenario(array_payload=True)
 TRUNCATED_DOWNLOAD = Scenario(truncate_downloads=True)
 DROPPED_DOWNLOAD = Scenario(drop_downloads=True)
+STALLED_DOWNLOAD = Scenario(stall_downloads_after_headers=True)
 FLAKY = Scenario(fail_first_n_commands=2)

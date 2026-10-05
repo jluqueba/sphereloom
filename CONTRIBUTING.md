@@ -101,10 +101,30 @@ The sequence to follow:
 
 1. Push the fixes.
 2. Wait for CI **and** for the new review to be posted.
-3. Read the new review. If it has findings, fix them and return to step 1.
+3. Read the new review, **both** its inline comments and its body. If either reports findings, fix them and return to step 1.
 4. Only when a full cycle comes back clean, resolve the threads and merge.
 
-Check with `gh api repos/jluqueba/sphereloom/pulls/<n>/reviews` and `.../comments`, comparing timestamps against your last push. The review UI shows the latest state; the API shows the history, which is what tells you whether a cycle completed after your change.
+#### Findings appear in two places
+
+Reading only the inline comments hides part of the review. This has happened in this repository: six medium findings survived several cycles because only the inline comments were being checked.
+
+| Where | How to read it | What only it contains |
+| --- | --- | --- |
+| Inline threads | `gh api repos/jluqueba/sphereloom/pulls/<n>/comments` | Findings anchored to changed lines |
+| Review body | `gh api repos/jluqueba/sphereloom/pulls/<n>/reviews`, field `body` of the latest review | Severity counts, and **"Previously missed"** — findings in code that has not changed since the last review |
+
+Two traps worth knowing:
+
+- **Do not filter findings by "created after my last push."** That filter cannot, by construction, show an older finding that is still outstanding — which is precisely what "previously missed" means. Use timestamps only to identify which cycle is the current one.
+- **The reviewer has two different logins.** It is `Copilot` in the REST API and `copilot-pull-request-reviewer` in GraphQL. A filter written for one silently returns nothing against the other. Thread resolution state (`isResolved`) is available only through GraphQL.
+
+Rather than doing this by hand, run:
+
+```powershell
+.\scripts\review_status.ps1 -PullRequest <n>
+```
+
+It reads both places, prints every outstanding finding, and exits non-zero while the review is not clean.
 
 Note that automated review cannot read `docs/internal/**`, which is encrypted. Changes there are reviewed by a maintainer with the key.
 

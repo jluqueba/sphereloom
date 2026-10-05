@@ -79,3 +79,18 @@ def test_an_absent_results_field_is_an_empty_result(payload: dict[str, Any]) -> 
 
 def test_an_object_results_field_is_returned() -> None:
     assert _results({"results": {"fileUrl": "x"}}, command="camera.takePicture") == {"fileUrl": "x"}
+
+
+def test_an_oversized_integer_completion_does_not_raise() -> None:
+    """`math.isfinite` converts to float and raises OverflowError on a large integer.
+
+    The value is valid JSON, so a hostile payload could crash polling instead of being
+    dropped.
+    """
+    assert _completion({"progress": {"completion": 10**400}}) is None
+
+
+@pytest.mark.parametrize("value", [-0.1, 1.1, 2, -1, 10**400, -(10**400)])
+def test_a_completion_outside_the_documented_range_is_dropped(value: Any) -> None:
+    """OSC defines completion as 0..1, so anything else is not a progress report."""
+    assert _completion({"progress": {"completion": value}}) is None

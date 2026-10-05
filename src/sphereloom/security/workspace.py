@@ -66,7 +66,17 @@ class Workspace:
             PathJailError: if the input is absolute, contains forbidden characters, or
                 resolves outside the workspace root.
         """
-        text = str(relative).strip()
+        # Length is checked on the raw value, before `strip()` copies it and `set()` scans
+        # every character. The argument comes from a tool call, so doing either first means
+        # an enormous string costs that work before the limit it violates is applied.
+        raw = str(relative)
+        if len(raw) > MAX_PATH_LENGTH:
+            raise PathJailError(
+                f"The destination path is longer than {MAX_PATH_LENGTH} characters. Use a "
+                "shorter name.",
+            )
+
+        text = raw.strip()
         if not text:
             raise PathJailError(
                 "A destination path is required. Provide a path relative to the workspace, "
@@ -78,12 +88,6 @@ class Workspace:
                 "The destination path contains characters that are not allowed in a "
                 "filename. Use letters, digits, dots, dashes, underscores and forward "
                 "slashes.",
-            )
-
-        if len(text) > MAX_PATH_LENGTH:
-            raise PathJailError(
-                f"The destination path is longer than {MAX_PATH_LENGTH} characters. Use a "
-                "shorter name.",
             )
 
         candidate = PurePath(text)

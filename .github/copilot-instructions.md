@@ -188,10 +188,21 @@
 ## Pull request completion
 
 - Copilot code review runs on every push to an open pull request (`review_on_push`).
-- A pull request is ready to merge only when the **most recent** review cycle produced **no new findings**.
+- A pull request is ready to merge only when the **most recent** review cycle reports no new findings **and** an empty "Previously missed" section.
 - Resolving one review's findings and merging on green CI is not sufficient: the fixing push starts a new review, which may surface new problems, including ones the fix introduced.
 - After pushing fixes, wait for the new review, read it, and repeat until a cycle comes back clean.
-- Compare review and comment timestamps against the last push using `gh api repos/<owner>/<repo>/pulls/<n>/reviews` and `.../comments`. The history is what proves a cycle completed after the change.
+
+### Read the review body, not only the inline comments
+
+Findings are reported in two different places, and reading only one of them hides the rest. This has happened: six medium findings survived several cycles because only inline comments were being checked.
+
+- **Inline threads** carry the findings attached to changed lines: `gh api repos/<owner>/<repo>/pulls/<n>/comments`.
+- **The review body** carries the overview and two sections that appear nowhere else: the **severity counts** (`Findings: 1 High`), and **"Previously missed (n)"**, which lists findings in code that has not changed since the last review. Read it with `gh api repos/<owner>/<repo>/pulls/<n>/reviews`, taking the `body` of the most recent review.
+- Never filter findings by `created_at > last push`. That filter cannot by construction show an older finding that is still outstanding, which is exactly what "previously missed" means.
+- In the REST API the reviewer's login is `Copilot`; in GraphQL the same account is `copilot-pull-request-reviewer`. A filter written for one returns nothing against the other.
+- Thread resolution state is only available through GraphQL (`reviewThreads { isResolved }`), not REST.
+- Run `.\scripts\review_status.ps1 -PullRequest <n>`, which reads both places and exits non-zero while anything is outstanding.
+- Compare review and comment timestamps against the last push to prove a cycle ran after the change, but use timestamps to establish *which cycle is current*, never to decide which findings still need work.
 - Resolve review threads only after the findings are actually addressed, never to unblock a merge.
 - Automated review cannot read `docs/internal/**` because it is encrypted; those changes need a maintainer with the key.
 

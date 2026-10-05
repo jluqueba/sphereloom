@@ -269,15 +269,19 @@ def _results(payload: Mapping[str, Any], *, command: str) -> dict[str, Any]:
 
 def _completion(payload: Mapping[str, Any]) -> float | None:
     progress = payload.get("progress")
-    if isinstance(progress, Mapping):
-        completion = progress.get("completion")
-        if (
-            isinstance(completion, int | float)
-            and not isinstance(completion, bool)
-            and math.isfinite(completion)
-        ):
-            # Non-finite values are dropped rather than logged: `json.dumps` renders them
-            # as bare NaN or Infinity, which is not valid JSON, so one malformed device
-            # value would make a log line unparseable.
-            return float(completion)
-    return None
+    if not isinstance(progress, Mapping):
+        return None
+
+    completion = progress.get("completion")
+    if not isinstance(completion, int | float) or isinstance(completion, bool):
+        return None
+
+    # The range check comes first and does the work of a finiteness check without the
+    # hazard: `math.isfinite` converts its argument to a float, which raises OverflowError
+    # for a large but perfectly valid JSON integer. Comparing against the documented 0..1
+    # range short-circuits that, and rejects NaN too, since every comparison with NaN is
+    # false. Dropping the value matters because it reaches a log record, and `json.dumps`
+    # writes a non-finite float bare, which no JSON parser accepts.
+    if not 0.0 <= completion <= 1.0:
+        return None
+    return float(completion)

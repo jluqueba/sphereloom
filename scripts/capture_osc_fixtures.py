@@ -41,7 +41,7 @@ from typing import Any
 
 import httpx
 
-from sphereloom.domain.payloads import bounded_payload, bounded_text
+from sphereloom.domain.payloads import bounded_payload, bounded_text, strict_json_loads
 
 DEFAULT_BASE_URL = "http://192.168.42.1"
 OUTPUT_DIR = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "osc"
@@ -267,7 +267,7 @@ def _request_json(client: httpx.Client, method: str, url: str, **kwargs: Any) ->
             chunks.append(chunk)
 
     try:
-        return json.loads(b"".join(chunks))
+        return strict_json_loads(b"".join(chunks))
     except (ValueError, RecursionError) as exc:
         message = f"The camera sent a response that is not usable JSON: {exc}"
         raise CaptureError(message) from exc

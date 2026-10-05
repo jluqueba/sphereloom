@@ -590,6 +590,16 @@ class FakeCamera:
                 headers={"Content-Length": str(len(content))},
             )
 
+        if self.scenario.stall_downloads_after_headers:
+            # Headers and one chunk arrive, then nothing. The caller is inside the body
+            # iteration when its read timeout fires, which is a different code path from a
+            # response that is merely slow to start.
+            async def stalled() -> AsyncIterator[bytes]:
+                yield content[:1]
+                await asyncio.sleep(3600)
+
+            return StreamingResponse(stalled(), media_type=media_type)
+
         if self.scenario.drop_downloads:
             # The same failure, earlier in the transfer.
             async def dropped() -> AsyncIterator[bytes]:
