@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from sphereloom.domain.errors import PathJailError
-from sphereloom.security.workspace import MAX_PATH_LENGTH, Workspace
+from sphereloom.security.workspace import MAX_COMPONENT_BYTES, MAX_PATH_LENGTH, Workspace
 
 
 def test_a_simple_relative_path_resolves_inside_the_workspace(workspace: Workspace) -> None:
@@ -83,11 +83,40 @@ def test_an_absurdly_long_path_is_rejected(workspace: Workspace) -> None:
         workspace.resolve("a" * (MAX_PATH_LENGTH + 1))
 
 
+def test_a_single_overlong_component_is_rejected(workspace: Workspace) -> None:
+    """A total-length check alone lets one enormous component through."""
+    with pytest.raises(PathJailError, match="longer than"):
+        workspace.resolve("downloads/" + "a" * (MAX_COMPONENT_BYTES + 1) + ".insv")
+
+
+def test_a_multibyte_component_is_measured_in_bytes(workspace: Workspace) -> None:
+    """Filesystems cap a name in bytes, so 255 multibyte characters is still too long."""
+    name = "ñ" * 200  # 400 bytes in UTF-8
+
+    with pytest.raises(PathJailError, match="longer than"):
+        workspace.resolve(f"downloads/{name}.insv")
+
+
+def test_an_overlong_component_fails_before_any_write_is_attempted(
+    workspace: Workspace,
+) -> None:
+    """The promise is a PathJailError, not an ENAMETOOLONG from inside a download.
+
+    Exercising the write path is the point: resolution alone would not have caught the
+    kernel rejecting the name later.
+    """
+    long_name = "a" * (MAX_COMPONENT_BYTES + 1)
+
+    with pytest.raises(PathJailError), workspace.atomic_write(f"downloads/{long_name}.insv"):
+        pass  # pragma: no cover - the context manager raises on entry
+
+
 def test_a_long_but_usable_path_is_accepted(workspace: Workspace) -> None:
     """Being strict must not reject names a user could reasonably choose."""
-    resolved = workspace.resolve("downloads/" + "a" * 100 + ".insv")
+    with workspace.atomic_write("downloads/" + "a" * 100 + ".insv") as (temp_path, destination):
+        temp_path.write_bytes(b"ok")
 
-    assert resolved.is_relative_to(workspace.root)
+    assert destination.read_bytes() == b"ok"
 
 
 def test_relative_display_hides_absolute_layout(workspace: Workspace) -> None:

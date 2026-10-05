@@ -41,6 +41,17 @@ class Scenario:
     #: their phone app. Nothing SphereLoom does can recover from it, so the message matters.
     unactivated: bool = False
 
+    #: Answer with JSON containing NaN or Infinity. Python's decoder accepts these by
+    #: default even though they are not valid JSON and no documented command returns them.
+    non_finite_json: bool = False
+
+    #: Answer with JSON nested deeply enough that decoding raises RecursionError rather
+    #: than a parse error, which is a different escape route out of the taxonomy.
+    deeply_nested_json: bool = False
+
+    #: Answer with a JSON array where the protocol specifies an object.
+    array_payload: bool = False
+
     #: Answer protocol requests with a body larger than any documented command produces.
     #: The camera is unauthenticated, so a hostile or broken responder on its network must
     #: not be able to exhaust the client's memory.
@@ -79,6 +90,9 @@ UNACTIVATED = Scenario(unactivated=True)
 SLOW = Scenario(latency_seconds=0.5)
 REDIRECTING = Scenario(redirect_responses=True)
 OVERSIZED = Scenario(oversized_responses=True)
+NON_FINITE_JSON = Scenario(non_finite_json=True)
+DEEPLY_NESTED_JSON = Scenario(deeply_nested_json=True)
+ARRAY_PAYLOAD = Scenario(array_payload=True)
 TRUNCATED_DOWNLOAD = Scenario(truncate_downloads=True)
 DROPPED_DOWNLOAD = Scenario(drop_downloads=True)
 FLAKY = Scenario(fail_first_n_commands=2)

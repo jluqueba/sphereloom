@@ -29,6 +29,13 @@ _FORBIDDEN_CHARS = frozenset('<>:"|?*\0')
 #: download.
 MAX_PATH_LENGTH = 1024
 
+#: Longest single path component. Most filesystems cap a name at 255 *bytes*, so a name of
+#: 255 multibyte characters would still be rejected by the kernel; the bound is applied to
+#: the encoded length for that reason. Without this, a total-length check alone lets one
+#: enormous component through, and the failure surfaces as ENAMETOOLONG from inside a
+#: download rather than as the PathJailError this class promises.
+MAX_COMPONENT_BYTES = 255
+
 
 class Workspace:
     """A directory that confines all file output."""
@@ -79,6 +86,14 @@ class Workspace:
                 "configured workspace, so supply a path relative to it, for example "
                 "'downloads/clip.insv'.",
             )
+
+        for part in candidate.parts:
+            if len(part.encode("utf-8")) > MAX_COMPONENT_BYTES:
+                raise PathJailError(
+                    f"One part of the destination path is longer than "
+                    f"{MAX_COMPONENT_BYTES} bytes, which no common filesystem accepts. Use "
+                    "a shorter name.",
+                )
 
         resolved = (self._root / candidate).expanduser().resolve()
         if not self._is_contained(resolved):

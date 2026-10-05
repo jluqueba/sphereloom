@@ -17,10 +17,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from sphereloom.adapters.osc.client import OscHttpClient
+from sphereloom.adapters.osc.client import RETRY_SAFE_COMMANDS, OscHttpClient
 from sphereloom.adapters.osc.errors import BACKEND, map_vendor_error
 from sphereloom.domain.clock import Monotonic, SystemMonotonic
-from sphereloom.domain.errors import InvalidArgumentError, OperationTimeoutError
+from sphereloom.domain.errors import (
+    InvalidArgumentError,
+    OperationTimeoutError,
+    SphereLoomError,
+)
 from sphereloom.logging import get_logger
 
 logger = get_logger("adapters.osc.commands")
@@ -154,6 +158,15 @@ class CommandRunner:
                 )
             except TimeoutError as exc:
                 raise expired() from exc
+            except SphereLoomError as exc:
+                # A polling failure carries no command name, so the client judges it by the
+                # status endpoint, which is harmless to repeat. But the command being polled
+                # was already accepted and may still be running, so letting that verdict
+                # through would invite a duplicate capture or delete. The outer operation's
+                # safety is what matters here, not the poll's.
+                if not _is_safe_to_repeat(name):
+                    exc.retryable = False
+                raise
 
             # Rechecked after the response: a poll that answered `done` just past the
             # deadline would otherwise be accepted, making the deadline advisory.
@@ -182,6 +195,11 @@ class CommandRunner:
                     }
                 },
             )
+
+
+def _is_safe_to_repeat(command: str) -> bool:
+    """Whether repeating this command is free of side effects."""
+    return command in RETRY_SAFE_COMMANDS
 
 
 def _validated_command_id(value: Any) -> str | None:

@@ -32,7 +32,7 @@ import random
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn
 
 import httpx
 
@@ -193,7 +193,7 @@ class OscHttpClient:
                     return cached
 
             payload = await self._request_json(
-                "GET", INFO_PATH, retryable=True, before_attempt=self._await_info_window
+                "GET", INFO_PATH, retry_server_errors=True, before_attempt=self._await_info_window
             )
             self._info_cache = payload
             self._info_cached_at = self._monotonic.elapsed()
@@ -229,7 +229,7 @@ class OscHttpClient:
 
     async def state(self) -> dict[str, Any]:
         """Read battery, storage and capture state."""
-        return await self._request_json("POST", STATE_PATH, retryable=True)
+        return await self._request_json("POST", STATE_PATH, retry_server_errors=True)
 
     async def execute(
         self,
@@ -252,7 +252,7 @@ class OscHttpClient:
                 "POST",
                 EXECUTE_PATH,
                 json=body,
-                retryable=name in RETRY_SAFE_COMMANDS,
+                retry_server_errors=name in RETRY_SAFE_COMMANDS,
                 command=name,
             )
 
@@ -263,7 +263,7 @@ class OscHttpClient:
         waiting for a capture would block every other call for the duration of the capture.
         """
         return await self._request_json(
-            "POST", STATUS_PATH, json={"id": command_id}, retryable=True
+            "POST", STATUS_PATH, json={"id": command_id}, retry_server_errors=True
         )
 
     @asynccontextmanager
@@ -379,7 +379,7 @@ class OscHttpClient:
         path: str,
         *,
         json: Any = None,
-        retryable: bool,
+        retry_server_errors: bool,
         command: str | None = None,
         before_attempt: Callable[[], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
@@ -387,7 +387,7 @@ class OscHttpClient:
             method,
             path,
             json=json,
-            retryable=retryable,
+            retry_server_errors=retry_server_errors,
             command=command,
             before_attempt=before_attempt,
         )
@@ -429,15 +429,22 @@ class OscHttpClient:
         method: str,
         path: str,
         *,
+        retry_server_errors: bool,
         json: Any,
-        retryable: bool,
         command: str | None,
         before_attempt: Callable[[], Awaitable[None]] | None = None,
     ) -> tuple[httpx.Response, bytes]:
-        attempts = MAX_ATTEMPTS if retryable else 1
+        """Send a request, repeating only the failures that are safe to repeat.
+
+        Two budgets, not one. A setup failure never reached the camera, so it is repeated
+        for every command including a capture. A completed 5xx did reach the camera, so it
+        is repeated only when the command has no side effect. Conflating the two meant a
+        capture gave up on the first connection error, contradicting this module's own
+        contract.
+        """
         last_error: Exception | None = None
 
-        for attempt in range(1, attempts + 1):
+        for attempt in range(1, MAX_ATTEMPTS + 1):
             # Runs before every attempt, retries included, so a throttled endpoint cannot
             # have several requests slipped into one window by a burst of retries.
             if before_attempt is not None:
@@ -446,9 +453,9 @@ class OscHttpClient:
             try:
                 response, body = await self._send_once(method, path, json=json, command=command)
             except (httpx.ConnectTimeout, httpx.PoolTimeout, httpx.ConnectError) as exc:
-                # Nothing reached the camera, so repeating is safe.
+                # Nothing reached the camera, so repeating is safe whatever the command is.
                 last_error = exc
-                if attempt >= attempts:
+                if attempt >= MAX_ATTEMPTS:
                     raise NotConnectedError(
                         "Could not reach the camera. Check that this machine has joined the "
                         "camera's Wi-Fi access point and that the camera is powered on.",
@@ -463,14 +470,13 @@ class OscHttpClient:
                 # a listing is harmless, repeating a capture or a delete is not. Saying
                 # "retryable" for the unsafe case would cause exactly the duplicate side
                 # effect this policy exists to prevent, only one layer further out.
-                safe_to_repeat = _is_safe_to_repeat(command)
                 raise OperationTimeoutError(
                     f"The camera did not respond within the timeout while calling "
                     f"{command or path}. The request was already sent, so it may still be "
                     "running on the camera; SphereLoom will not repeat it automatically.",
                     backend=BACKEND,
                     details={"command": command},
-                    retryable=safe_to_repeat,
+                    retryable=_is_safe_to_repeat(command),
                 ) from exc
             except httpx.HTTPError as exc:
                 # Also post-send and therefore ambiguous.
@@ -482,7 +488,12 @@ class OscHttpClient:
                     retryable=_is_safe_to_repeat(command),
                 ) from exc
             else:
-                if response.status_code in _RETRYABLE_STATUS and attempt < attempts:
+                should_retry = (
+                    retry_server_errors
+                    and response.status_code in _RETRYABLE_STATUS
+                    and attempt < MAX_ATTEMPTS
+                )
+                if should_retry:
                     await self._backoff(attempt)
                     continue
                 return response, body
@@ -533,14 +544,19 @@ class OscHttpClient:
             )
 
         try:
-            payload = json_module.loads(body)
-        except ValueError as exc:
-            # Some firmware returns malformed JSON under load. Treating it as a crash would
-            # be unhelpful; reporting it with a bounded excerpt is diagnosable.
+            payload = json_module.loads(body, parse_constant=_reject_non_finite)
+        except (ValueError, RecursionError) as exc:
+            # Malformed JSON appears on some firmware under load. Deeply nested input
+            # raises RecursionError rather than ValueError, and Python's decoder accepts
+            # NaN and Infinity by default, neither of which is valid JSON or a value any
+            # documented command returns. All three are the same thing to a caller: a
+            # response that cannot be used.
             raise InternalError(
                 _malformed_message(command),
                 backend=BACKEND,
                 details={
+                    # Sliced before decoding: decoding first would materialise the whole
+                    # untrusted body to produce two hundred characters.
                     "excerpt": body[:200].decode("utf-8", errors="replace"),
                     "command": command,
                 },
@@ -551,11 +567,25 @@ class OscHttpClient:
             raise InternalError(
                 "The camera returned a JSON value where an object was expected.",
                 backend=BACKEND,
-                details={"excerpt": str(payload)[:200], "command": command},
+                # The type, not the value. Rendering an arbitrarily large list or nested
+                # structure to produce a short excerpt recreates the allocation hazard the
+                # bounded read exists to avoid.
+                details={"received_type": type(payload).__name__, "command": command},
                 retryable=_is_safe_to_repeat(command),
             )
 
         return payload
+
+
+def _reject_non_finite(constant: str) -> NoReturn:
+    """Refuse the non-finite constants Python's JSON decoder accepts by default.
+
+    `NaN`, `Infinity` and `-Infinity` are not valid JSON and no documented command returns
+    them. Accepting them would let a value that defeats every numeric comparison flow into
+    domain models.
+    """
+    message = f"The camera sent the non-finite JSON constant {constant!r}."
+    raise ValueError(message)
 
 
 def _malformed_message(command: str | None) -> str:

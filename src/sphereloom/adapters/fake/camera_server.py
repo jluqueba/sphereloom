@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import math
 import threading
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field, replace
@@ -94,10 +95,13 @@ def _bounded_int(value: Any, *, maximum: int) -> int | None:
 
     `int()` on arbitrary input raises, which a real camera would not do, and an unbounded
     count would let one request ask the fake to build an arbitrarily large response.
-    Booleans are refused explicitly because `True == 1` in Python. Returns None when the
-    value cannot be used, so the caller answers with a vendor error instead.
+    Booleans are refused explicitly because `True == 1` in Python, and non-finite floats
+    before conversion, because `int(float("nan"))` raises rather than comparing false.
+    Returns None when the value cannot be used, so the caller answers with a vendor error.
     """
     if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
         return None
     if value != int(value) or value < 0:
         return None
@@ -297,6 +301,25 @@ class FakeCamera:
                 {"name": "redirected"},
                 status_code=302,
                 headers={"Location": "/elsewhere"},
+            )
+
+        if self.scenario.non_finite_json:
+            return Response(
+                '{"fingerprint": "FPR", "state": {"batteryLevel": NaN}}',
+                media_type="application/json",
+            )
+
+        if self.scenario.deeply_nested_json:
+            depth = 20_000
+            return Response(
+                "[" * depth + "]" * depth,
+                media_type="application/json",
+            )
+
+        if self.scenario.array_payload:
+            return Response(
+                json.dumps(["not", "an", "object"]),
+                media_type="application/json",
             )
 
         if self.scenario.oversized_responses:

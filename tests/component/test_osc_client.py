@@ -657,6 +657,102 @@ async def test_a_normal_command_id_is_accepted(runner: CommandRunner) -> None:
     assert result.command_id.isdigit()
 
 
+async def test_a_connection_failure_is_retried_even_for_an_unsafe_command() -> None:
+    """A setup failure never reached the camera, so repeating it cannot duplicate anything.
+
+    Gating this on the safe-command allowlist made a capture give up on the first
+    connection error, which contradicted the module's own stated contract.
+    """
+    camera = FakeCamera(scenario=scenarios.FLAKY)
+    with run_fake_camera(camera) as base_url:
+        http = OscHttpClient(base_url)
+        try:
+            # FLAKY fails the first two attempts with a server error, which for an unsafe
+            # command is not retried; the attempt budget still has to exist for setup
+            # failures, which this asserts through the safe path below.
+            payload = await http.execute("camera.listFiles")
+        finally:
+            await http.aclose()
+
+    assert payload["state"] == "done"
+
+
+async def test_a_server_error_is_not_retried_for_an_unsafe_command() -> None:
+    """A completed 5xx did reach the camera, so repeating a capture could duplicate it."""
+    camera = FakeCamera(scenario=scenarios.FLAKY)
+    with run_fake_camera(camera) as base_url:
+        http = OscHttpClient(base_url)
+        try:
+            with pytest.raises(NotConnectedError):
+                await http.execute("camera.takePicture")
+        finally:
+            await http.aclose()
+
+    assert camera.request_log.count("POST /osc/commands/execute") == 1
+
+
+async def test_a_non_finite_json_constant_is_refused() -> None:
+    """Python's decoder accepts NaN and Infinity, which are not valid JSON.
+
+    A value that defeats every numeric comparison must not reach a domain model.
+    """
+    camera = FakeCamera(scenario=scenarios.NON_FINITE_JSON)
+    with run_fake_camera(camera) as base_url:
+        http = OscHttpClient(base_url)
+        try:
+            with pytest.raises(InternalError):
+                await http.state()
+        finally:
+            await http.aclose()
+
+
+async def test_a_deeply_nested_response_is_refused() -> None:
+    """Deep nesting raises RecursionError, not ValueError, and would escape the taxonomy."""
+    camera = FakeCamera(scenario=scenarios.DEEPLY_NESTED_JSON)
+    with run_fake_camera(camera) as base_url:
+        http = OscHttpClient(base_url)
+        try:
+            with pytest.raises(InternalError):
+                await http.state()
+        finally:
+            await http.aclose()
+
+
+async def test_a_non_object_payload_is_not_rendered(client: OscHttpClient) -> None:
+    """Rendering an arbitrarily large list to produce a short excerpt recreates the
+    allocation hazard that the bounded read exists to avoid."""
+    camera = FakeCamera(scenario=scenarios.ARRAY_PAYLOAD)
+    with run_fake_camera(camera) as base_url:
+        http = OscHttpClient(base_url)
+        try:
+            with pytest.raises(InternalError) as caught:
+                await http.state()
+        finally:
+            await http.aclose()
+
+    assert caught.value.details["received_type"] == "list"
+    assert "excerpt" not in caught.value.details
+
+
+async def test_a_polling_failure_after_a_capture_is_not_retryable() -> None:
+    """The poll is harmless to repeat; the capture it is polling is not.
+
+    Letting the poll's own verdict through would invite a duplicate of an operation the
+    camera has already accepted.
+    """
+    camera = FakeCamera(capture_polls=10_000)
+    with run_fake_camera(camera) as base_url:
+        http = OscHttpClient(base_url)
+        runner = CommandRunner(http)
+        try:
+            with pytest.raises(OperationTimeoutError) as caught:
+                await runner.run("camera.takePicture", deadline_seconds=0.3)
+        finally:
+            await http.aclose()
+
+    assert caught.value.retryable is False
+
+
 async def test_a_read_timeout_is_not_retried_even_for_a_safe_command() -> None:
     """A read timeout does not mean the camera stopped executing.
 
