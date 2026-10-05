@@ -84,9 +84,14 @@ def test_a_broad_and_deep_payload_is_bounded_by_node_count() -> None:
     """
 
     def branching(depth: int) -> Any:
-        if depth == 0:
-            return "leaf"
-        return {f"key{index}": branching(depth - 1) for index in range(20)}
+        # Each level reuses one child object, so building this costs 120 entries while a
+        # traversal still sees 20**6 nodes. Materialising it for real would be 64 million
+        # leaves: the test would exhaust memory before the code under test ran.
+        node: Any = "leaf"
+        for _ in range(depth):
+            child = node
+            node = {f"key{index}": child for index in range(20)}
+        return node
 
     assert len(str(bounded_payload(branching(6)))) < 10_000
 
@@ -151,3 +156,56 @@ def test_bounding_is_idempotent() -> None:
     once = bounded_payload({"a": ["x" * 1000] * 50})
 
     assert bounded_payload(once) == once
+
+
+def test_a_non_finite_float_is_replaced() -> None:
+    """`json.dumps` writes NaN bare, so one device value would break the whole envelope."""
+    result = bounded_payload({"a": float("nan"), "b": float("inf"), "c": float("-inf")})
+
+    assert result == {"a": MALFORMED, "b": MALFORMED, "c": MALFORMED}
+    json.dumps(result, allow_nan=False)
+
+
+def test_an_enormous_integer_is_replaced() -> None:
+    """CPython raises rather than render an integer wider than 4300 digits."""
+    result = bounded_payload({"value": 10**5000})
+
+    assert result == {"value": MALFORMED}
+    json.dumps(result, allow_nan=False)
+
+
+def test_an_ordinary_integer_survives() -> None:
+    assert bounded_payload({"value": 10**100}) == {"value": 10**100}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"a": float("nan")},
+        {"a": 10**5000},
+        [float("inf"), 10**5000],
+        {"a": {"b": [float("nan"), {"c": 10**9000}]}},
+    ],
+)
+def test_the_result_serialises_under_strict_json(payload: Any) -> None:
+    """The contract is JSON-safe, which means strict JSON, not Python's lenient dialect."""
+    json.dumps(bounded_payload(payload), allow_nan=False)
+
+
+def test_an_integer_is_truncated_like_any_other_scalar() -> None:
+    """The limit was a no-op for numbers, so a long integer ignored its bound."""
+    assert len(bounded_text(10**4000, 64)) <= 65
+
+
+def test_an_unrenderable_integer_does_not_raise() -> None:
+    """`str()` on an integer wider than 4300 digits raises, inside the error-mapping path."""
+    assert bounded_text(10**5000, 64) == MALFORMED
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.5, True, False])
+def test_an_ordinary_scalar_still_renders(value: Any) -> None:
+    assert bounded_text(value, 64) == str(value)
+
+
+def test_an_integer_within_the_limit_is_not_truncated() -> None:
+    assert bounded_text(10**60, 64) == str(10**60)

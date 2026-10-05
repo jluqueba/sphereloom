@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import json as json_module
+import math
 import random
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
@@ -549,7 +550,9 @@ class OscHttpClient:
             )
 
         try:
-            payload = json_module.loads(body, parse_constant=_reject_non_finite)
+            payload = json_module.loads(
+                body, parse_constant=_reject_non_finite, parse_float=_finite_float
+            )
         except (ValueError, RecursionError) as exc:
             # Malformed JSON appears on some firmware under load. Deeply nested input
             # raises RecursionError rather than ValueError, and Python's decoder accepts
@@ -591,6 +594,21 @@ def _reject_non_finite(constant: str) -> NoReturn:
     """
     message = f"The camera sent the non-finite JSON constant {constant!r}."
     raise ValueError(message)
+
+
+def _finite_float(literal: str) -> float:
+    """Refuse number literals that overflow to infinity.
+
+    `parse_constant` only ever sees the bare tokens `NaN`, `Infinity` and `-Infinity`. A
+    literal such as `1e400` is well-formed JSON that every parser accepts, and Python
+    renders it as `inf`, so an overflow bypasses that guard completely and reaches domain
+    models as a value that defeats every numeric comparison.
+    """
+    value = float(literal)
+    if not math.isfinite(value):
+        message = f"The camera sent the number literal {literal!r}, which overflows to {value}."
+        raise ValueError(message)
+    return value
 
 
 def _malformed_message(command: str | None) -> str:

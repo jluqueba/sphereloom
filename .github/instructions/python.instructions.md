@@ -90,7 +90,18 @@ These are not hypothetical; each has been a real defect in this repository.
 - `or` for defaulting silently replaces a meaningful `0`, `""` or `False`. Use `is None`.
 - `False == 0` and `True == 1`, so a membership test accepts a boolean where a number belongs. Compare type as well as value.
 - Reject non-finite floats where a duration or a bound is expected: `NaN` defeats every comparison and infinity removes the limit.
+- Non-finite values arrive as well-formed literals too. `parse_constant` catches the bare `NaN` and `Infinity` tokens, but `1e400` is valid JSON that every parser accepts and Python renders as `inf`; bound `parse_float` as well.
+- `str()` on an integer is neither bounded nor total: CPython raises above 4300 digits rather than render it.
 - Prefer a monotonic source for elapsed time and deadlines; wall clocks move backwards.
+
+## Apply a rule at the chokepoint, not at the sites that were flagged
+
+Every finding names one location. The rule it implies almost never applies to only that location.
+
+- Before fixing, find the point through which the whole class flows: a shared helper, a parser, a formatter. Fix it there, then check the call sites.
+- Fixing the consumers and leaving the shared helper untouched is backwards, and it is the single most common way a rule in this file has been written and then immediately violated. A `NaN` guard was once added to two callers of a bounding helper while the helper itself kept emitting `NaN`.
+- A bound applied after an unbounded step protects nothing. Check the ordering: redacting, copying or decoding before bounding has already spent the memory the bound existed to save.
+- When a limit reserves space for something added later, validate against the reduced limit. A name that fits on its own may not fit once a temporary suffix is appended, and the failure then arrives from the kernel mid-operation instead of from the validator.
 
 ## Write tests that can fail
 
@@ -100,3 +111,5 @@ These are not hypothetical; each has been a real defect in this repository.
 - When testing a branch that waits, keep the conditions inside the window that triggers the wait, or the branch never runs.
 - Prefer injecting at a seam the production code already defines, such as a transport or a clock, over patching internals. A test coupled to implementation detail breaks on refactoring and tests the wrong thing meanwhile.
 - Fix the class of defect, not the single instance the reviewer named. When a fix applies to one call site, search for the others before committing.
+- A test must not be a hazard itself. Building a structure to prove a bound works can allocate more than the bound ever would: share one child object per level instead of materialising a distinct subtree, so traversal is still exponential while construction is not.
+- Review the diff adversarially before pushing, not after. A finding that arrives from the pull request costs a full round trip; the same finding found locally costs minutes.

@@ -36,6 +36,13 @@ MAX_PATH_LENGTH = 1024
 #: download rather than as the PathJailError this class promises.
 MAX_COMPONENT_BYTES = 255
 
+#: Bytes that `atomic_write` adds to the destination name when it builds its temporary
+#: file: a leading dot, a separating dot, eight random characters and the `.partial`
+#: suffix. A name that fits the component limit on its own can still exceed it once the
+#: temporary file is named, and that failure arrives from the kernel partway through a
+#: download instead of as the PathJailError this class promises.
+TEMP_NAME_OVERHEAD = 18
+
 
 class Workspace:
     """A directory that confines all file output."""
@@ -134,6 +141,19 @@ class Workspace:
         download therefore never leaves a half-written file that looks complete.
         """
         destination = self.resolve(relative)
+
+        # Checked before anything is created. `resolve` bounds the name on its own, but the
+        # temporary file this method writes through is longer, so a name within 18 bytes of
+        # the limit passes validation and then fails in the kernel mid-download.
+        name_bytes = len(destination.name.encode("utf-8"))
+        if name_bytes > MAX_COMPONENT_BYTES - TEMP_NAME_OVERHEAD:
+            raise PathJailError(
+                f"The file name is {name_bytes} bytes long. Writing it safely needs "
+                f"{TEMP_NAME_OVERHEAD} more for a temporary file, which exceeds the "
+                f"{MAX_COMPONENT_BYTES}-byte limit filesystems impose on a single name. "
+                "Use a shorter name.",
+            )
+
         destination.parent.mkdir(parents=True, exist_ok=True)
 
         handle, temp_name = tempfile.mkstemp(

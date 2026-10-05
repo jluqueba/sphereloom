@@ -190,6 +190,30 @@ def test_polling_an_unknown_command_id_is_an_error(client: httpx.Client) -> None
     assert response.json()["error"]["code"] == "invalidParameterValue"
 
 
+@pytest.mark.parametrize("path", ["/osc/commands/execute", "/osc/commands/status"])
+@pytest.mark.parametrize("body", [[1, 2], "text", 5, True, None])
+def test_a_json_body_that_is_not_an_object_is_rejected(
+    client: httpx.Client, path: str, body: object
+) -> None:
+    """These parse as valid JSON, so `.get` would raise and answer 500 instead of 400."""
+    response = client.post(path, json=body)
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalidParameterValue"
+
+
+@pytest.mark.parametrize("path", ["/osc/commands/execute", "/osc/commands/status"])
+def test_a_deeply_nested_json_body_is_rejected(client: httpx.Client, path: str) -> None:
+    """The decoder raises `RecursionError`, which is not a `ValueError`."""
+    response = client.post(
+        path,
+        content=b"[" * 100_000 + b"]" * 100_000,
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 400
+
+
 # ---------------------------------------------------------------- recording
 
 

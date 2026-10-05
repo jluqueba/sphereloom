@@ -8,7 +8,12 @@ from pathlib import Path
 import pytest
 
 from sphereloom.domain.errors import PathJailError
-from sphereloom.security.workspace import MAX_COMPONENT_BYTES, MAX_PATH_LENGTH, Workspace
+from sphereloom.security.workspace import (
+    MAX_COMPONENT_BYTES,
+    MAX_PATH_LENGTH,
+    TEMP_NAME_OVERHEAD,
+    Workspace,
+)
 
 
 def test_a_simple_relative_path_resolves_inside_the_workspace(workspace: Workspace) -> None:
@@ -97,14 +102,10 @@ def test_a_multibyte_component_is_measured_in_bytes(workspace: Workspace) -> Non
         workspace.resolve(f"downloads/{name}.insv")
 
 
-def test_an_overlong_component_fails_before_any_write_is_attempted(
+def test_an_overlong_component_is_rejected_by_resolution(
     workspace: Workspace,
 ) -> None:
-    """The promise is a PathJailError, not an ENAMETOOLONG from inside a download.
-
-    Exercising the write path is the point: resolution alone would not have caught the
-    kernel rejecting the name later.
-    """
+    """A name past the component limit never reaches the write path at all."""
     long_name = "a" * (MAX_COMPONENT_BYTES + 1)
 
     with pytest.raises(PathJailError), workspace.atomic_write(f"downloads/{long_name}.insv"):
@@ -168,3 +169,31 @@ def test_atomic_write_rejects_an_escaping_destination(workspace: Workspace) -> N
 
     with pytest.raises(PathJailError):
         escaping_write()
+
+
+def test_a_name_that_only_fits_without_its_temporary_file_is_refused(
+    workspace: Workspace,
+) -> None:
+    """`resolve` bounds the name; `atomic_write` writes through a longer one.
+
+    A name in this range passed validation and then failed in the kernel partway through a
+    download, which is the failure MAX_COMPONENT_BYTES exists to prevent. The promise is a
+    PathJailError, not an ENAMETOOLONG from inside a download.
+    """
+    name = "a" * (MAX_COMPONENT_BYTES - TEMP_NAME_OVERHEAD - 3) + ".jpg"
+
+    workspace.resolve(name)
+
+    with pytest.raises(PathJailError), workspace.atomic_write(name):
+        pass  # pragma: no cover - the context manager raises on entry
+
+
+def test_a_name_that_fits_with_its_temporary_file_is_written(
+    workspace: Workspace,
+) -> None:
+    name = "a" * (MAX_COMPONENT_BYTES - TEMP_NAME_OVERHEAD - 4) + ".jpg"
+
+    with workspace.atomic_write(name) as (temp_path, destination):
+        temp_path.write_bytes(b"data")
+
+    assert destination.read_bytes() == b"data"

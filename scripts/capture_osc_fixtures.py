@@ -227,13 +227,56 @@ OPTION_NAMES = [
 ]
 
 
+class CaptureError(RuntimeError):
+    """A response this script cannot use, reported to the user rather than as a traceback."""
+
+
+#: Largest response body this script will decode. A capture records a realistic reply;
+#: anything beyond this is a misbehaving camera. Decoding multiplies memory, because the
+#: resulting object graph is far larger than the bytes that produced it, so the bound has
+#: to apply while reading rather than after.
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+
+
+def _request_json(client: httpx.Client, method: str, url: str, **kwargs: Any) -> Any:
+    """Make a request and decode its body within a byte bound.
+
+    `response.json()` reads and decodes whatever arrives, with no limit on either. Reading
+    through a bound, and decoding inside a guard, keeps a malformed or enormous reply from
+    ending the session with a MemoryError or a traceback. `json.loads` raises
+    `RecursionError` rather than `ValueError` on deeply nested input, so the obvious
+    `except` clause misses it.
+    """
+    with client.stream(method, url, **kwargs) as response:
+        if not response.is_success:
+            # The body has to be read before `raise_for_status` can describe the failure.
+            response.read()
+            response.raise_for_status()
+
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_bytes():
+            total += len(chunk)
+            if total > MAX_RESPONSE_BYTES:
+                message = (
+                    f"The camera sent more than {MAX_RESPONSE_BYTES} bytes in one response, "
+                    "far beyond anything the documented commands return."
+                )
+                raise CaptureError(message)
+            chunks.append(chunk)
+
+    try:
+        return json.loads(b"".join(chunks))
+    except (ValueError, RecursionError) as exc:
+        message = f"The camera sent a response that is not usable JSON: {exc}"
+        raise CaptureError(message) from exc
+
+
 def _execute(client: httpx.Client, name: str, parameters: dict[str, Any] | None = None) -> Any:
     payload: dict[str, Any] = {"name": name}
     if parameters:
         payload["parameters"] = parameters
-    response = client.post("/osc/commands/execute", json=payload)
-    response.raise_for_status()
-    return response.json()
+    return _request_json(client, "POST", "/osc/commands/execute", json=payload)
 
 
 def _poll_until_done(
@@ -247,10 +290,8 @@ def _poll_until_done(
     """
     started = time.monotonic()
     while time.monotonic() - started < deadline_seconds:
-        response = client.post("/osc/commands/status", json={"id": command_id})
-        response.raise_for_status()
-        body = response.json()
-        state = body.get("state")
+        body = _request_json(client, "POST", "/osc/commands/status", json={"id": command_id})
+        state = body.get("state") if isinstance(body, dict) else None
         if state in {"done", "error"}:
             return body
         time.sleep(interval)
@@ -268,14 +309,10 @@ def capture(base_url: str, *, take_photo: bool, timeout: float) -> dict[str, Any
 
     with httpx.Client(base_url=base_url, headers=HEADERS, timeout=timeout) as client:
         print("  GET  /osc/info", file=sys.stderr)
-        info = client.get("/osc/info")
-        info.raise_for_status()
-        captured["info"] = info.json()
+        captured["info"] = _request_json(client, "GET", "/osc/info")
 
         print("  POST /osc/state", file=sys.stderr)
-        state = client.post("/osc/state")
-        state.raise_for_status()
-        captured["state"] = state.json()
+        captured["state"] = _request_json(client, "POST", "/osc/state")
 
         print("  POST camera.getOptions", file=sys.stderr)
         captured["get_options"] = _execute(
@@ -313,7 +350,7 @@ def capture(base_url: str, *, take_photo: bool, timeout: float) -> dict[str, Any
                     captured["take_picture_result"] = _poll_until_done(
                         client, str(command_id), deadline_seconds=CAPTURE_DEADLINE_SECONDS
                     )
-                except (TimeoutError, httpx.HTTPError) as exc:
+                except (TimeoutError, httpx.HTTPError, CaptureError) as exc:
                     print(f"  capture did not complete: {exc}", file=sys.stderr)
             else:
                 print(
@@ -416,6 +453,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Connecting to {args.base_url} ...", file=sys.stderr)
     try:
         captured = capture(args.base_url, take_photo=args.capture_photo, timeout=args.timeout)
+    except CaptureError as exc:
+        print(f"\nThe camera sent something this script cannot use: {exc}", file=sys.stderr)
+        return 1
     except httpx.HTTPError as exc:
         print(
             f"\nCould not reach the camera: {exc}\n\n"
@@ -426,8 +466,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     found: set[str] = set()
+    # Bound first, then redact. Redaction walks and copies the structure recursively, so
+    # running it on the raw response would already have exhausted memory or the recursion
+    # limit before any limit applied. Bounding cannot hide anything sensitive: whatever it
+    # drops is not written either.
     redacted = {
-        name: _bounded_fixture(redact(payload, found=found)) for name, payload in captured.items()
+        name: redact(_bounded_fixture(payload), found=found) for name, payload in captured.items()
     }
 
     removed = write_outputs(redacted, args.output_dir, redacted_keys=found)

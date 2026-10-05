@@ -181,9 +181,14 @@ def test_a_broad_and_deep_payload_is_bounded_by_total_size() -> None:
     """
 
     def branching(depth: int) -> object:
-        if depth == 0:
-            return "leaf"
-        return {f"key{index}": branching(depth - 1) for index in range(20)}
+        # Each level reuses one child object, so building this costs 100 entries while a
+        # traversal still sees 20**5 nodes. Materialising it for real allocates about
+        # 230 MB, so the test would be a memory hazard rather than a check on the bound.
+        node: object = "leaf"
+        for _ in range(depth):
+            child = node
+            node = {f"key{index}": child for index in range(20)}
+        return node
 
     payload = {"error": {"code": "noFreeSpace", "message": "full"}, "tree": branching(5)}
 

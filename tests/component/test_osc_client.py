@@ -744,6 +744,22 @@ async def test_a_non_finite_json_constant_is_refused() -> None:
             await http.aclose()
 
 
+async def test_an_overflowing_number_literal_is_refused() -> None:
+    """`1e400` is well-formed JSON that every parser accepts, and Python renders it `inf`.
+
+    `parse_constant` only sees the bare NaN and Infinity tokens, so this is a separate
+    escape route for a value that defeats every numeric comparison.
+    """
+    camera = FakeCamera(scenario=scenarios.OVERFLOWING_NUMBER)
+    with run_fake_camera(camera) as base_url:
+        http = OscHttpClient(base_url)
+        try:
+            with pytest.raises(InternalError):
+                await http.state()
+        finally:
+            await http.aclose()
+
+
 async def test_a_deeply_nested_response_is_refused() -> None:
     """Deep nesting raises RecursionError, not ValueError, and would escape the taxonomy."""
     camera = FakeCamera(scenario=scenarios.DEEPLY_NESTED_JSON)

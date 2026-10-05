@@ -21,6 +21,7 @@ from sphereloom.adapters.osc.client import RETRY_SAFE_COMMANDS, OscHttpClient
 from sphereloom.adapters.osc.errors import BACKEND, map_vendor_error
 from sphereloom.domain.clock import Monotonic, SystemMonotonic
 from sphereloom.domain.errors import (
+    InternalError,
     InvalidArgumentError,
     OperationTimeoutError,
     SphereLoomError,
@@ -108,7 +109,7 @@ class CommandRunner:
             return await self._await_completion(name, command_id, deadline_seconds=deadline)
 
         if state == STATE_DONE:
-            return CommandResult(name=name, results=_results(payload))
+            return CommandResult(name=name, results=_results(payload, command=name))
 
         # Anything else is a response we do not understand. Treating an unrecognised state
         # as success would turn a malformed reply into an empty successful result, which is
@@ -179,7 +180,9 @@ class CommandRunner:
                 raise map_vendor_error(payload, command=name)
 
             if state == STATE_DONE:
-                return CommandResult(name=name, results=_results(payload), command_id=command_id)
+                return CommandResult(
+                    name=name, results=_results(payload, command=name), command_id=command_id
+                )
 
             if state != STATE_IN_PROGRESS:
                 # An unrecognised state during polling is as untrustworthy as one in the
@@ -244,9 +247,24 @@ def _validated_deadline(seconds: float) -> float:
     return seconds
 
 
-def _results(payload: Mapping[str, Any]) -> dict[str, Any]:
+def _results(payload: Mapping[str, Any], *, command: str) -> dict[str, Any]:
+    """Extract the result object from a terminal response.
+
+    A missing `results` is legitimate: several commands report success with no payload. A
+    `results` that is present but is not an object is not, and silently turning it into an
+    empty dictionary would report success while discarding whatever the camera actually
+    said -- the same failure mode as treating an unrecognised state as done.
+    """
     results = payload.get("results")
-    return dict(results) if isinstance(results, dict) else {}
+    if results is None:
+        return {}
+    if not isinstance(results, Mapping):
+        message = (
+            f"{command} returned a 'results' field of type "
+            f"{type(results).__name__} instead of an object."
+        )
+        raise InternalError(message, backend=BACKEND)
+    return dict(results)
 
 
 def _completion(payload: Mapping[str, Any]) -> float | None:

@@ -45,6 +45,11 @@ class Scenario:
     #: default even though they are not valid JSON and no documented command returns them.
     non_finite_json: bool = False
 
+    #: Answer with a number literal that overflows to infinity. This is well-formed JSON
+    #: that every parser accepts, so it slips past the guard on the bare NaN and Infinity
+    #: tokens and reaches domain code as a value no comparison can order.
+    overflowing_number: bool = False
+
     #: Answer with JSON nested deeply enough that decoding raises RecursionError rather
     #: than a parse error, which is a different escape route out of the taxonomy.
     deeply_nested_json: bool = False
@@ -91,6 +96,7 @@ SLOW = Scenario(latency_seconds=0.5)
 REDIRECTING = Scenario(redirect_responses=True)
 OVERSIZED = Scenario(oversized_responses=True)
 NON_FINITE_JSON = Scenario(non_finite_json=True)
+OVERFLOWING_NUMBER = Scenario(overflowing_number=True)
 DEEPLY_NESTED_JSON = Scenario(deeply_nested_json=True)
 ARRAY_PAYLOAD = Scenario(array_payload=True)
 TRUNCATED_DOWNLOAD = Scenario(truncate_downloads=True)

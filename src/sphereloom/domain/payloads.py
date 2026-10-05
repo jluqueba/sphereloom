@@ -16,6 +16,7 @@ and only one of them was right.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 #: Longest string preserved verbatim.
@@ -31,6 +32,10 @@ MAX_DEPTH = 4
 #: at four levels deep is a hundred and sixty thousand nodes.
 MAX_NODES = 200
 
+#: Widest integer preserved. CPython raises rather than render an integer of more than 4300
+#: digits, so an unbounded value would make serialisation fail instead of producing output.
+MAX_INT_BITS = 4096
+
 #: Stands in for anything that was removed, truncated or could not be represented.
 ELLIPSIS = "…"
 MALFORMED = "[malformed]"
@@ -40,16 +45,25 @@ def bounded_text(value: Any, limit: int = MAX_STRING_LENGTH) -> str:
     """Render a scalar within a bound, refusing shapes that would allocate first.
 
     `str()` on an arbitrary payload materialises the whole structure before anything is
-    truncated, so a large list supplied where a name belongs would defeat the limit.
+    truncated, so a large list supplied where a name belongs would defeat the limit. The
+    same is true of a large integer: `str()` on one is neither bounded nor total, since
+    CPython raises above 4300 digits rather than render it.
     """
     if isinstance(value, str):
-        collapsed = " ".join(value.split())
-        return collapsed if len(collapsed) <= limit else collapsed[:limit] + ELLIPSIS
-    if isinstance(value, bool | int | float):
-        return str(value)
+        return _truncate(" ".join(value.split()), limit)
     if value is None:
         return ""
+    if isinstance(value, bool | float):
+        return _truncate(str(value), limit)
+    if isinstance(value, int):
+        # Checked before rendering: `str()` on a wider integer raises rather than return a
+        # long string, which would turn a reported failure into a crash.
+        return _truncate(str(value), limit) if value.bit_length() <= MAX_INT_BITS else MALFORMED
     return MALFORMED
+
+
+def _truncate(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit] + ELLIPSIS
 
 
 def bounded_payload(
@@ -138,10 +152,21 @@ def _bounded(
     if isinstance(payload, str):
         return bounded_text(payload, max_string)
 
-    # Only JSON scalars survive. Anything else -- an arbitrary object, a set, a datetime --
-    # would serialise badly or not at all, and an error envelope that cannot be serialised
-    # turns a reported failure into an unreported crash.
-    if isinstance(payload, bool | int | float) or payload is None:
+    # Only JSON scalars survive, and only those that actually serialise. Anything else --
+    # an arbitrary object, a set, a datetime -- would serialise badly or not at all, and an
+    # error envelope that cannot be serialised turns a reported failure into an unreported
+    # crash. `bool` is checked before `int` because `True` is an `int`.
+    if payload is None or isinstance(payload, bool):
         return payload
+
+    if isinstance(payload, int):
+        # CPython refuses to render an integer wider than 4300 digits, so a large enough
+        # value from a device raises inside `json.dumps` instead of serialising.
+        return payload if payload.bit_length() <= MAX_INT_BITS else MALFORMED
+
+    if isinstance(payload, float):
+        # `json.dumps` writes NaN and Infinity bare, which no JSON parser accepts, so one
+        # non-finite value from a device makes the whole envelope unreadable.
+        return payload if math.isfinite(payload) else MALFORMED
 
     return MALFORMED

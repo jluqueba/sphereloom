@@ -11,7 +11,8 @@ from typing import Any
 
 import pytest
 
-from sphereloom.adapters.osc.commands import _completion
+from sphereloom.adapters.osc.commands import _completion, _results
+from sphereloom.domain.errors import InternalError
 
 
 @pytest.mark.parametrize(
@@ -58,3 +59,23 @@ def test_whatever_is_reported_is_always_json_serialisable(value: Any) -> None:
     assert json.loads(json.dumps({"job_progress": result}, allow_nan=False)) == {
         "job_progress": result
     }
+
+
+# ---------------------------------------------------------------- terminal response shape
+
+
+@pytest.mark.parametrize("results", [[], [1, 2], "done", 5, True])
+def test_a_non_object_results_field_is_not_reported_as_success(results: Any) -> None:
+    """Coercing it to `{}` would report success while discarding what the camera said."""
+    with pytest.raises(InternalError):
+        _results({"results": results}, command="camera.takePicture")
+
+
+@pytest.mark.parametrize("payload", [{}, {"results": None}])
+def test_an_absent_results_field_is_an_empty_result(payload: dict[str, Any]) -> None:
+    """Several commands legitimately report success with no payload."""
+    assert _results(payload, command="camera.takePicture") == {}
+
+
+def test_an_object_results_field_is_returned() -> None:
+    assert _results({"results": {"fileUrl": "x"}}, command="camera.takePicture") == {"fileUrl": "x"}

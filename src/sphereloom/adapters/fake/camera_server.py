@@ -90,6 +90,29 @@ def _is_accepted(value: Any, candidate: Any) -> bool:
     return bool(value == candidate)
 
 
+async def _request_object(request: Request) -> dict[str, Any] | None:
+    """Parse a request body that must be a JSON object, or `None` if it is not.
+
+    A real camera answers nonsense with a 400, not a stack trace. Two inputs would
+    otherwise escape: a body that is valid JSON but not an object (`[1, 2]` parses, then
+    `.get` raises `AttributeError`), and one nested deeply enough that the decoder raises
+    `RecursionError`, which is not a `ValueError` and so is not caught by the obvious
+    `except` clause.
+    """
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _malformed_request() -> JSONResponse:
+    return JSONResponse(
+        {"error": {"code": "invalidParameterValue", "message": "Malformed request."}},
+        status_code=400,
+    )
+
+
 def _bounded_int(value: Any, *, maximum: int) -> int | None:
     """Coerce a client-supplied count, refusing anything that is not a sane number.
 
@@ -309,6 +332,12 @@ class FakeCamera:
                 media_type="application/json",
             )
 
+        if self.scenario.overflowing_number:
+            return Response(
+                '{"fingerprint": "FPR", "state": {"batteryLevel": 1e400}}',
+                media_type="application/json",
+            )
+
         if self.scenario.deeply_nested_json:
             depth = 20_000
             return Response(
@@ -426,13 +455,9 @@ class FakeCamera:
             self._executing = False
 
     async def _dispatch(self, request: Request) -> Response:
-        try:
-            payload = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return JSONResponse(
-                {"error": {"code": "invalidParameterValue", "message": "Malformed request."}},
-                status_code=400,
-            )
+        payload = await _request_object(request)
+        if payload is None:
+            return _malformed_request()
 
         name = str(payload.get("name", ""))
         parameters = payload.get("parameters")
@@ -494,13 +519,9 @@ class FakeCamera:
         if rejected is not None:
             return rejected
 
-        try:
-            payload = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return JSONResponse(
-                {"error": {"code": "invalidParameterValue", "message": "Malformed request."}},
-                status_code=400,
-            )
+        payload = await _request_object(request)
+        if payload is None:
+            return _malformed_request()
 
         command_id = str(payload.get("id", ""))
         pending = self._pending.get(command_id)
