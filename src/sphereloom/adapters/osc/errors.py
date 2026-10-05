@@ -197,7 +197,9 @@ def _excerpt_bounded(payload: Any, *, depth: int, budget: _Budget) -> Any:
             if index >= _MAX_ITEMS or budget.remaining <= 0:
                 excerpt["…"] = f"{len(payload) - index} more keys"
                 break
-            excerpt[str(key)] = _excerpt_bounded(value, depth=depth + 1, budget=budget)
+            excerpt[_bounded(str(key), _EXCERPT_LIMIT)] = _excerpt_bounded(
+                value, depth=depth + 1, budget=budget
+            )
         return excerpt
 
     if isinstance(payload, list):

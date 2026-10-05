@@ -9,6 +9,7 @@ protocol.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections.abc import AsyncIterator
 
@@ -452,19 +453,52 @@ async def test_a_slow_response_maps_to_the_timeout_taxonomy() -> None:
     assert caught.value.retryable is True
 
 
-async def test_a_timed_out_idempotent_request_is_retried_but_bounded() -> None:
-    """Retrying a read is right; retrying forever is not."""
+async def test_a_stale_cache_is_not_reported_as_fresh_after_a_failed_refresh() -> None:
+    """The throttle marker and the cache timestamp are different facts.
+
+    Conflating them means every failed refresh makes an old payload look newly fetched,
+    which is the opposite of what the age field exists to tell a caller.
+    """
+    camera = FakeCamera()
+    monotonic = FakeMonotonic()
+    with run_fake_camera(camera) as base_url:
+        http = OscHttpClient(base_url, monotonic=monotonic)
+        try:
+            await http.info()
+            monotonic.advance(INFO_MIN_INTERVAL_SECONDS + 0.1)
+
+            # The camera goes away, so the refresh fails and leaves the old payload behind.
+            await http._client.aclose()
+            with pytest.raises((NotConnectedError, OperationTimeoutError, RuntimeError)):
+                await http.info()
+
+            cached = http._cached_info()
+        finally:
+            with contextlib.suppress(RuntimeError):
+                await http.aclose()
+
+    assert cached is None, "a stale payload was reported as inside the freshness window"
+
+
+async def test_a_read_timeout_is_not_retried_even_for_a_safe_command() -> None:
+    """A read timeout does not mean the camera stopped executing.
+
+    The request was already sent, so retrying would put a second command in flight while
+    the first may still be running, breaking the vendor's one-at-a-time rule. The retry
+    allowlist governs *which commands* may repeat; it cannot make an ambiguous failure
+    unambiguous.
+    """
     slow = FakeCamera(scenario=scenarios.Scenario(latency_seconds=2.0))
     with run_fake_camera(slow) as base_url:
         http = OscHttpClient(base_url, read_timeout=0.2)
         try:
-            with pytest.raises(OperationTimeoutError):
+            with pytest.raises(OperationTimeoutError) as caught:
                 await http.execute("camera.getOptions")
         finally:
             await http.aclose()
 
-    attempts = slow.request_log.count("POST /osc/commands/execute")
-    assert 1 < attempts <= 3
+    assert slow.request_log.count("POST /osc/commands/execute") == 1
+    assert "already sent" in caught.value.message
 
 
 async def test_a_timed_out_capture_is_not_retried() -> None:
@@ -479,6 +513,19 @@ async def test_a_timed_out_capture_is_not_retried() -> None:
             await http.aclose()
 
     assert slow.request_log.count("POST /osc/commands/execute") == 1
+
+
+async def test_a_connection_failure_is_retried_because_nothing_was_sent() -> None:
+    """A connect failure is unambiguous: the camera never saw the request."""
+    camera = FakeCamera(scenario=scenarios.FLAKY)
+    with run_fake_camera(camera) as base_url:
+        http = OscHttpClient(base_url)
+        try:
+            payload = await http.execute("camera.getOptions")
+        finally:
+            await http.aclose()
+
+    assert payload["state"] == "done"
 
 
 # ---------------------------------------------------------------- malformed responses

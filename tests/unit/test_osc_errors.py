@@ -161,6 +161,18 @@ def test_a_deeply_nested_payload_is_bounded_by_depth() -> None:
     assert len(rendered) < 2000
 
 
+def test_a_very_long_dictionary_key_is_bounded() -> None:
+    """Bounding values but not keys leaves the envelope just as floodable."""
+    payload = {
+        "error": {"code": "noFreeSpace", "message": "full"},
+        "x" * 10_000: "short value",
+    }
+
+    rendered = str(map_vendor_error(payload).details["vendor"])
+
+    assert len(rendered) < 2000
+
+
 def test_a_broad_and_deep_payload_is_bounded_by_total_size() -> None:
     """Per-level limits are not a bound.
 

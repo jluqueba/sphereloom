@@ -131,7 +131,11 @@ class OscHttpClient:
         #: empty cache and issue a burst of requests inside one vendor window.
         self._info_lock = asyncio.Lock()
         self._info_cache: dict[str, Any] | None = None
+        #: When the last request was *attempted*, which is what the throttle measures.
         self._info_attempted_at: float | None = None
+        #: When the cache was last *populated*, which is what freshness measures. The two
+        #: differ whenever a refresh fails, and conflating them reports stale data as new.
+        self._info_cached_at: float | None = None
 
     @property
     def base_url(self) -> str:
@@ -166,6 +170,7 @@ class OscHttpClient:
                 "GET", INFO_PATH, retryable=True, before_attempt=self._await_info_window
             )
             self._info_cache = payload
+            self._info_cached_at = self._monotonic.elapsed()
             return CachedInfo(payload=payload, age_seconds=0.0)
 
     async def _await_info_window(self) -> None:
@@ -183,9 +188,15 @@ class OscHttpClient:
         self._info_attempted_at = self._monotonic.elapsed()
 
     def _cached_info(self) -> CachedInfo | None:
-        if self._info_cache is None or self._info_attempted_at is None:
+        """The remembered payload, if it is still inside the vendor window.
+
+        Freshness is measured from when the cache was *populated*, not from the last
+        attempt. Those differ whenever a refresh fails, and conflating them would let a
+        stale payload be reported as less than a second old after every failure.
+        """
+        if self._info_cache is None or self._info_cached_at is None:
             return None
-        age = self._monotonic.elapsed() - self._info_attempted_at
+        age = self._monotonic.elapsed() - self._info_cached_at
         if age >= INFO_MIN_INTERVAL_SECONDS:
             return None
         return CachedInfo(payload=self._info_cache, age_seconds=age)
@@ -291,8 +302,8 @@ class OscHttpClient:
             ) from exc
         except httpx.HTTPError as exc:
             raise NotConnectedError(
-                "The download was interrupted before it finished. The partial file has "
-                "been discarded; retrying is safe.",
+                "The download was interrupted before it finished. Whatever was written is "
+                "incomplete and must be discarded; retrying is safe.",
                 backend=BACKEND,
             ) from exc
         finally:
@@ -375,15 +386,8 @@ class OscHttpClient:
 
             try:
                 response = await self._client.request(method, path, json=json)
-            except httpx.TimeoutException as exc:
-                last_error = exc
-                if attempt >= attempts:
-                    raise OperationTimeoutError(
-                        f"The camera did not respond within the timeout while calling "
-                        f"{command or path}. It may be busy, asleep, or out of Wi-Fi range.",
-                        backend=BACKEND,
-                    ) from exc
-            except httpx.HTTPError as exc:
+            except (httpx.ConnectTimeout, httpx.PoolTimeout, httpx.ConnectError) as exc:
+                # Nothing reached the camera, so repeating is safe.
                 last_error = exc
                 if attempt >= attempts:
                     raise NotConnectedError(
@@ -391,6 +395,25 @@ class OscHttpClient:
                         "camera's Wi-Fi access point and that the camera is powered on.",
                         backend=BACKEND,
                     ) from exc
+            except httpx.TimeoutException as exc:
+                # A read or write timeout is ambiguous: the request was sent, and the
+                # camera may still be executing it. Retrying would put a second command in
+                # flight while the first runs, breaking the vendor's one-at-a-time rule.
+                raise OperationTimeoutError(
+                    f"The camera did not respond within the timeout while calling "
+                    f"{command or path}. The request was already sent, so it may still be "
+                    "running on the camera; SphereLoom will not repeat it automatically.",
+                    backend=BACKEND,
+                    details={"command": command},
+                ) from exc
+            except httpx.HTTPError as exc:
+                # Also post-send and therefore ambiguous.
+                raise NotConnectedError(
+                    "Lost contact with the camera after the request was sent. It may still "
+                    "have been acted on, so SphereLoom will not repeat it automatically.",
+                    backend=BACKEND,
+                    details={"command": command},
+                ) from exc
             else:
                 if response.status_code in _RETRYABLE_STATUS and attempt < attempts:
                     await self._backoff(attempt)
