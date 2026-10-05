@@ -10,9 +10,18 @@ here rather than left to callers to remember:
 3. `/osc/info` should not be polled more than once per second. A small cache enforces that
    and reports the age of what it returns, so a caller can tell fresh from remembered.
 
-Retries are deliberately narrow. A dropped connection while listing files is worth
-retrying; a dropped connection after `takePicture` is not, because the camera may well have
-taken the picture. That distinction is the whole retry policy.
+Retries are deliberately narrow, and the distinction is between three kinds of failure
+rather than between two kinds of command:
+
+* **Setup failures** -- connect timeouts, pool timeouts, connection errors. The camera
+  never saw the request, so repeating it is unambiguously safe.
+* **Completed server responses** -- 500, 502, 503, 504 for a command on the safe-command
+  allowlist. The camera did see the request, but it answered without acting, so a listing
+  or an options read may be repeated.
+* **Ambiguous post-send failures** -- a read or write timeout, a dropped connection after
+  transmission. The request arrived and the camera may be acting on it right now. These are
+  never retried automatically, and when the command changes state they are reported as
+  non-retryable so a caller is not invited to duplicate a capture or a delete.
 """
 
 from __future__ import annotations
@@ -299,12 +308,14 @@ class OscHttpClient:
             raise OperationTimeoutError(
                 "The download stalled and timed out before it finished.",
                 backend=BACKEND,
+                retryable=True,
             ) from exc
         except httpx.HTTPError as exc:
             raise NotConnectedError(
                 "The download was interrupted before it finished. Whatever was written is "
                 "incomplete and must be discarded; retrying is safe.",
                 backend=BACKEND,
+                retryable=True,
             ) from exc
         finally:
             await response.aclose()
@@ -399,20 +410,29 @@ class OscHttpClient:
                 # A read or write timeout is ambiguous: the request was sent, and the
                 # camera may still be executing it. Retrying would put a second command in
                 # flight while the first runs, breaking the vendor's one-at-a-time rule.
+                #
+                # Whether an *agent* may safely repeat it depends on the command: repeating
+                # a listing is harmless, repeating a capture or a delete is not. Saying
+                # "retryable" for the unsafe case would cause exactly the duplicate side
+                # effect this policy exists to prevent, only one layer further out.
+                safe_to_repeat = command is None or command in RETRY_SAFE_COMMANDS
                 raise OperationTimeoutError(
                     f"The camera did not respond within the timeout while calling "
                     f"{command or path}. The request was already sent, so it may still be "
                     "running on the camera; SphereLoom will not repeat it automatically.",
                     backend=BACKEND,
                     details={"command": command},
+                    retryable=safe_to_repeat,
                 ) from exc
             except httpx.HTTPError as exc:
                 # Also post-send and therefore ambiguous.
+                safe_to_repeat = command is None or command in RETRY_SAFE_COMMANDS
                 raise NotConnectedError(
                     "Lost contact with the camera after the request was sent. It may still "
                     "have been acted on, so SphereLoom will not repeat it automatically.",
                     backend=BACKEND,
                     details={"command": command},
+                    retryable=safe_to_repeat,
                 ) from exc
             else:
                 if response.status_code in _RETRYABLE_STATUS and attempt < attempts:

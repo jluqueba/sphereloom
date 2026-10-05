@@ -39,10 +39,17 @@ class SphereLoomError(Exception):
 
     Messages are written for a human and a model at once: they state what failed, why, and
     what to do next. They must never contain tokens, network credentials or absolute paths.
+
+    `retryable` is per-instance, not per-class. The same taxonomy code can be safe or unsafe
+    to repeat depending on *when* it happened: a timeout before a capture command reached
+    the camera is worth retrying, while a timeout after the camera accepted it is not,
+    because the capture may well be running. Collapsing both into one class-level answer
+    would tell an agent to repeat an operation that duplicates its side effects.
     """
 
     code: ClassVar[ErrorCode] = ErrorCode.INTERNAL
-    retryable: ClassVar[bool] = False
+    #: What this code usually means, when the raiser has nothing more specific to say.
+    default_retryable: ClassVar[bool] = False
 
     def __init__(
         self,
@@ -54,6 +61,7 @@ class SphereLoomError(Exception):
         docs_url: str | None = None,
         available_in: str | None = None,
         details: dict[str, JsonValue] | None = None,
+        retryable: bool | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -63,6 +71,7 @@ class SphereLoomError(Exception):
         self.docs_url = docs_url
         self.available_in = available_in
         self.details: dict[str, JsonValue] = details or {}
+        self.retryable = self.default_retryable if retryable is None else retryable
 
     def to_envelope(self) -> dict[str, JsonValue]:
         """Render the error as the wire envelope shared by every tool."""
@@ -98,14 +107,14 @@ class NotConnectedError(SphereLoomError):
     """The camera is unreachable, or the endpoint is not a spherical camera."""
 
     code = ErrorCode.NOT_CONNECTED
-    retryable = True
+    default_retryable = True
 
 
 class CameraBusyError(SphereLoomError):
     """The camera is already running a capture or another command."""
 
     code = ErrorCode.CAMERA_BUSY
-    retryable = True
+    default_retryable = True
 
 
 class InvalidArgumentError(SphereLoomError):
@@ -148,14 +157,14 @@ class OperationTimeoutError(SphereLoomError):
     """A deadline was exceeded before the operation reported completion."""
 
     code = ErrorCode.TIMEOUT
-    retryable = True
+    default_retryable = True
 
 
 class RateLimitedError(SphereLoomError):
     """An internal rate limit rejected the call."""
 
     code = ErrorCode.RATE_LIMITED
-    retryable = True
+    default_retryable = True
 
 
 class StorageFullError(SphereLoomError):

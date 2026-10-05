@@ -480,6 +480,63 @@ async def test_a_stale_cache_is_not_reported_as_fresh_after_a_failed_refresh() -
     assert cached is None, "a stale payload was reported as inside the freshness window"
 
 
+async def test_an_ambiguous_failure_after_an_unsafe_command_is_not_advertised_as_retryable() -> (
+    None
+):
+    """Not retrying is only half the fix. The envelope must not invite a retry either.
+
+    An agent reading `retryable: true` will repeat the call, producing exactly the
+    duplicate capture the client's own retry policy exists to prevent -- one layer further
+    out, where the policy cannot reach.
+    """
+    slow = FakeCamera(scenario=scenarios.Scenario(latency_seconds=2.0))
+    with run_fake_camera(slow) as base_url:
+        http = OscHttpClient(base_url, read_timeout=0.2)
+        try:
+            with pytest.raises(OperationTimeoutError) as caught:
+                await http.execute("camera.takePicture")
+        finally:
+            await http.aclose()
+
+    assert caught.value.retryable is False
+    body = caught.value.to_envelope()["error"]
+    assert isinstance(body, dict)
+    assert body["retryable"] is False
+
+
+async def test_an_ambiguous_failure_after_a_safe_command_stays_retryable() -> None:
+    """Repeating a listing is harmless, so the caller should be told it may."""
+    slow = FakeCamera(scenario=scenarios.Scenario(latency_seconds=2.0))
+    with run_fake_camera(slow) as base_url:
+        http = OscHttpClient(base_url, read_timeout=0.2)
+        try:
+            with pytest.raises(OperationTimeoutError) as caught:
+                await http.execute("camera.listFiles")
+        finally:
+            await http.aclose()
+
+    assert caught.value.retryable is True
+
+
+async def test_a_timeout_after_acceptance_is_not_advertised_as_retryable() -> None:
+    """The camera accepted the command and may still be running it.
+
+    The command id is the way forward; repeating the command is not.
+    """
+    stuck = FakeCamera(capture_polls=10_000)
+    with run_fake_camera(stuck) as base_url:
+        http = OscHttpClient(base_url)
+        runner = CommandRunner(http)
+        try:
+            with pytest.raises(OperationTimeoutError) as caught:
+                await runner.run("camera.takePicture", deadline_seconds=0.3)
+        finally:
+            await http.aclose()
+
+    assert caught.value.retryable is False
+    assert caught.value.details["command_id"]
+
+
 async def test_a_read_timeout_is_not_retried_even_for_a_safe_command() -> None:
     """A read timeout does not mean the camera stopped executing.
 

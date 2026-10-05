@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from sphereloom.domain.errors import (
     ERROR_CLASSES,
     ErrorCode,
+    InvalidArgumentError,
+    OperationTimeoutError,
     SphereLoomError,
     UnsupportedCapabilityError,
 )
@@ -24,6 +28,32 @@ def test_every_exception_class_reports_its_own_code() -> None:
 
 def test_exception_classes_are_distinct() -> None:
     assert len(set(ERROR_CLASSES.values())) == len(ERROR_CLASSES)
+
+
+def _envelope(error: SphereLoomError) -> dict[str, Any]:
+    """Extract the rendered error body with a type mypy can work with."""
+    body = error.to_envelope()["error"]
+    assert isinstance(body, dict)
+    return body
+
+
+def test_retryability_can_be_set_per_instance() -> None:
+    """The same code can be safe or unsafe to repeat depending on when it happened.
+
+    A timeout before a command reached the camera is worth retrying; the same timeout after
+    the camera accepted it is not, because the operation may be running.
+    """
+    before_send = OperationTimeoutError("never sent", retryable=True)
+    after_send = OperationTimeoutError("may be running", retryable=False)
+
+    assert before_send.retryable is True
+    assert after_send.retryable is False
+    assert _envelope(after_send)["retryable"] is False
+
+
+def test_retryability_falls_back_to_the_class_default() -> None:
+    assert OperationTimeoutError("no opinion given").retryable is True
+    assert InvalidArgumentError("no opinion given").retryable is False
 
 
 def test_envelope_contains_the_required_fields() -> None:

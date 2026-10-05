@@ -124,6 +124,11 @@ class CommandRunner:
                 f"{command_id}, which you can poll directly if needed.",
                 backend=BACKEND,
                 details={"command": name, "command_id": command_id},
+                # The camera accepted this command and may still be running it. Advertising
+                # it as retryable would invite a caller to issue a second capture or delete
+                # on top of one already in progress. The command id is the way forward, not
+                # a repeat of the command.
+                retryable=False,
             )
 
         while True:

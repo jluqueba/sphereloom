@@ -18,10 +18,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - OSC HTTP client (`sphereloom.adapters.osc.client`) enforcing the three protocol
   constraints Insta360 documents: the required `X-XSRF-Protected` header on every request,
   one command in flight at a time, and `/osc/info` polled no more than once per second with
-  the age of cached readings reported to callers. Retries are limited to failures that
-  provably happened before the request reached the camera; an ambiguous failure such as a
-  read timeout is surfaced rather than repeated, because the camera may still be acting on
-  it.
+  the age of cached readings reported to callers. Retries distinguish three kinds of
+  failure: setup failures the camera never saw are repeated; 500-class responses are
+  repeated only for read-only commands on an allowlist; and ambiguous post-send failures,
+  where the camera may already be acting, are never repeated and are reported as
+  non-retryable when the command changes state, so a caller is not invited to duplicate a
+  capture or a delete.
 - Command runner (`sphereloom.adapters.osc.commands`) that waits for asynchronous commands
   to actually finish. A capture acknowledgement is not a result, and returning early would
   hand back a photo that does not exist yet. The deadline bounds the poll itself and is
