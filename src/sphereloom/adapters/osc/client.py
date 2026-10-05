@@ -441,7 +441,11 @@ class OscHttpClient:
         # A 4xx carries the vendor's error envelope. `execute` and `command_status` hand it
         # back for the command runner to map with the command's context; every other
         # endpoint maps it here, or `info()` would cache an error as the camera's identity.
-        if response.status_code >= 400 and not vendor_errors_to_caller:
+        # Only a body that really is an error envelope is handed back: a 4xx whose body
+        # looks like a result would otherwise be accepted by the runner as a success.
+        if response.status_code >= 400 and not (
+            vendor_errors_to_caller and _is_error_envelope(payload)
+        ):
             raise map_vendor_error(payload, command=command)
         return payload
 
@@ -642,6 +646,11 @@ class OscHttpClient:
             )
 
         return payload
+
+
+def _is_error_envelope(payload: Mapping[str, Any]) -> bool:
+    """Whether a body reports a failure, in either of the shapes the vendor uses."""
+    return isinstance(payload.get("error"), dict) or payload.get("state") == "error"
 
 
 async def _close_response(response: httpx.Response) -> None:

@@ -489,3 +489,14 @@ def test_a_value_under_a_sensitive_key_is_redacted(
     logging.getLogger("sphereloom.test").info("x", extra={"context": context})
 
     assert "SECRETTOKENVALUE" not in capsys.readouterr().err
+
+
+def test_a_value_whose_key_was_truncated_is_withheld(capsys: pytest.CaptureFixture[str]) -> None:
+    """Bounding runs before redaction, and cutting a long key can remove the word that
+    marked it as sensitive, so the value of a truncated key is withheld."""
+    configure_logging(level="INFO", redaction=True)
+    logging.getLogger("sphereloom.test").info(
+        "x", extra={"context": {"x" * 600 + "token": "SECRETTOKENVALUE"}}
+    )
+
+    assert "SECRETTOKENVALUE" not in capsys.readouterr().err

@@ -290,15 +290,23 @@ def _redact_value(value: Any) -> Any:
     if isinstance(value, dict):
         return {
             (redact(key) if isinstance(key, str) else key): (
-                REDACTED
-                if isinstance(key, str) and _SENSITIVE_KEY.search(key)
-                else _redact_value(item)
+                REDACTED if isinstance(key, str) and _is_sensitive_key(key) else _redact_value(item)
             )
             for key, item in value.items()
         }
     if isinstance(value, list):
         return [_redact_value(item) for item in value]
     return value
+
+
+def _is_sensitive_key(key: str) -> bool:
+    """Whether a structured key names a secret, or was cut short before it could be read.
+
+    Bounding runs before redaction, so a long key is truncated first. A key that ended in
+    `token` would lose the very word that marks it, and its value would be written out. A
+    truncated key therefore counts as sensitive: its value is withheld rather than guessed.
+    """
+    return _SENSITIVE_KEY.search(key) is not None or key.endswith(ELLIPSIS)
 
 
 class RedactionFilter(logging.Filter):

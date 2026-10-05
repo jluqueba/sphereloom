@@ -1398,3 +1398,50 @@ async def test_an_enormous_off_origin_host_is_bounded_in_the_error(client: OscHt
             pass  # pragma: no cover - the context manager raises on entry
 
     assert len(str(caught.value.details["received_host"])) <= 256
+
+
+@pytest.mark.parametrize(
+    "path", ["/osc/commands/execute", "/osc/commands/status"], ids=["execute", "status"]
+)
+async def test_a_4xx_whose_body_looks_like_a_result_is_not_a_success(path: str) -> None:
+    """A 4xx is handed to the command runner only when its body really is an error.
+
+    A body shaped like a result was otherwise accepted by the runner as a success.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/osc/commands/execute" and path.endswith("status"):
+            return _json_response(
+                200, {"name": "camera.takePicture", "state": "inProgress", "id": "1"}
+            )
+        return _json_response(400, {"name": "camera.takePicture", "state": "done", "results": {}})
+
+    http = OscHttpClient("http://192.168.42.1", transport=httpx.MockTransport(handler))
+    runner = CommandRunner(http)
+    try:
+        with pytest.raises(InternalError):
+            await runner.run("camera.takePicture", deadline_seconds=5)
+    finally:
+        await http.aclose()
+
+
+async def test_a_4xx_error_envelope_still_reaches_the_runner_with_its_context() -> None:
+    transport = httpx.MockTransport(
+        lambda request: _json_response(
+            400,
+            {
+                "name": "camera.setOptions",
+                "state": "error",
+                "error": {"code": "invalidParameterValue", "message": "bad iso"},
+            },
+        )
+    )
+    http = OscHttpClient("http://192.168.42.1", transport=transport)
+    runner = CommandRunner(http)
+    try:
+        with pytest.raises(InvalidArgumentError) as caught:
+            await runner.run("camera.setOptions")
+    finally:
+        await http.aclose()
+
+    assert "camera.setOptions" in caught.value.message
