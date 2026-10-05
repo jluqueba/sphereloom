@@ -450,7 +450,7 @@ def test_a_frozenset_at_the_depth_limit_still_says_frozenset(
     assert "frozenset({...})" in json.loads(capsys.readouterr().err.strip())["message"]
 
 
-@pytest.mark.parametrize("separator", ["\n", "\t", "\r", " "])
+@pytest.mark.parametrize("separator", ["\n", "\t", "\r", " ", "\v", "\f", "\x1c", "\u2028", "\xa0"])
 def test_a_secret_split_by_escaped_whitespace_is_still_redacted(
     capsys: pytest.CaptureFixture[str], separator: str
 ) -> None:
@@ -463,5 +463,29 @@ def test_a_secret_split_by_escaped_whitespace_is_still_redacted(
     logging.getLogger("sphereloom.test").info(
         "%s", [f"Bearer{separator}SECRETTOKENVALUE", f"token:{separator}SECRETTOKENVALUE"]
     )
+
+    assert "SECRETTOKENVALUE" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        {"token": "SECRETTOKENVALUE"},
+        {"auth": {"token": "SECRETTOKENVALUE"}},
+        {"items": [{"api_key": "SECRETTOKENVALUE"}]},
+        {"wifi": {"SSID": "SECRETTOKENVALUE"}},
+        {"Authorization": "SECRETTOKENVALUE"},
+    ],
+)
+def test_a_value_under_a_sensitive_key_is_redacted(
+    capsys: pytest.CaptureFixture[str], context: dict[str, object]
+) -> None:
+    """In a structured record the label is the key, not part of the value.
+
+    The text patterns find a secret by its label, so a value whose key names a secret was
+    written out as it was, at the top level and at any depth.
+    """
+    configure_logging(level="INFO", redaction=True)
+    logging.getLogger("sphereloom.test").info("x", extra={"context": context})
 
     assert "SECRETTOKENVALUE" not in capsys.readouterr().err

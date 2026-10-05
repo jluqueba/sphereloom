@@ -12,9 +12,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   origin before following it. Download URLs arrive in device responses, and a malformed or
   hostile payload could otherwise make SphereLoom fetch an arbitrary host with the client's
   headers attached.
-- Log redaction now covers tracebacks and strings nested anywhere in a record's structured
-  context. Previously only the message and top-level context values were redacted, so a
-  traceback could record absolute file paths containing the user's home directory.
+- Log redaction now covers tracebacks, strings nested anywhere in a record's structured
+  context, and any value whose key names a secret, such as `token` or `api_key`.
+  Previously only the message and top-level context values were redacted, and only by
+  pattern, so a traceback could record absolute file paths containing the user's home
+  directory and `{"token": "..."}` was logged as it was.
 - Log records are bounded before they are redacted or formatted, and every cut ends on a
   word boundary so that a truncated value never leaves a fragment of a secret too short
   for redaction to recognise.

@@ -42,11 +42,19 @@ MAX_CONTEXT_ITEMS = 50
 MAX_CONTEXT_DEPTH = 6
 MAX_CONTEXT_NODES = 500
 
-#: Whitespace as it appears in a log line: a real space, tab or newline, or the escaped form
-#: `repr` writes for one. A container argument is rendered with `repr` before redaction
-#: runs, so a newline between `Bearer` and its token arrives as the two characters `\n`; a
-#: pattern that required real whitespace there let the token through.
-_SEP = r"(?:\s|\\[ntr])"
+#: Whitespace as it appears in a log line: real whitespace, or any escape `repr` writes in
+#: its place. A container argument is rendered with `repr` before redaction runs, so a
+#: separator between `Bearer` and its token arrives as `\n`, `\x0b`, `\u2028` and so on; a
+#: pattern that required real whitespace let the token through. `repr` never escapes
+#: printable ASCII, so treating every escape as a separator only covers what it hid.
+_SEP = r"(?:\s|\\[ntr]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})"
+
+#: Structured keys whose values are secrets whatever they look like. The text patterns
+#: below find a secret by its label, and in a structured record the label is the key, not
+#: part of the value, so `{"token": "abc"}` would otherwise be logged as it is.
+_SENSITIVE_KEY = re.compile(
+    r"(?i)(token|secret|passw(or)?d|api[_-]?key|ssid|authori[sz]ation|bearer|credential)"
+)
 
 #: Patterns stripped from every log record when redaction is enabled.
 _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -281,7 +289,11 @@ def _redact_value(value: Any) -> Any:
         return redact(value)
     if isinstance(value, dict):
         return {
-            (redact(key) if isinstance(key, str) else key): _redact_value(item)
+            (redact(key) if isinstance(key, str) else key): (
+                REDACTED
+                if isinstance(key, str) and _SENSITIVE_KEY.search(key)
+                else _redact_value(item)
+            )
             for key, item in value.items()
         }
     if isinstance(value, list):
