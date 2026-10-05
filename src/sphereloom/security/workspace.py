@@ -88,7 +88,19 @@ class Workspace:
             )
 
         for part in candidate.parts:
-            if len(part.encode("utf-8")) > MAX_COMPONENT_BYTES:
+            try:
+                encoded_length = len(part.encode("utf-8"))
+            except UnicodeEncodeError as exc:
+                # A lone surrogate, which a JSON escape such as \ud800 can produce, cannot
+                # be encoded at all. A validator that crashes on bad input has failed at
+                # the one job it has, so this becomes a refusal like any other.
+                raise PathJailError(
+                    "The destination path contains characters that cannot be encoded as a "
+                    "filename. Use letters, digits, dots, dashes, underscores and forward "
+                    "slashes.",
+                ) from exc
+
+            if encoded_length > MAX_COMPONENT_BYTES:
                 raise PathJailError(
                     f"One part of the destination path is longer than "
                     f"{MAX_COMPONENT_BYTES} bytes, which no common filesystem accepts. Use "

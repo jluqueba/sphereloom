@@ -124,16 +124,21 @@ class OscHttpClient:
         connect_timeout: float = 5.0,
         read_timeout: float = 15.0,
         monotonic: Monotonic | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._monotonic = monotonic or SystemMonotonic()
-        # The client is constructed here rather than injected. Accepting an outside client
-        # would let a caller bypass every protocol setting below -- the mandatory header,
-        # the explicit timeouts, the redirect policy -- while this class still claimed to
-        # enforce them. A configuration guarantee that can be opted out of silently is not
-        # a guarantee.
+        # The *client* is constructed here rather than injected, because accepting an
+        # outside client would let a caller bypass every protocol setting below -- the
+        # mandatory header, the explicit timeouts, the redirect policy -- while this class
+        # still claimed to enforce them.
+        #
+        # A *transport* may be supplied, which is a different thing: it replaces only how
+        # bytes reach the network, leaving every protocol guarantee intact. That is what
+        # makes transport-level failures testable without reopening the hole.
         self._client = httpx.AsyncClient(
             base_url=self._base_url,
+            transport=transport,
             headers={
                 XSRF_HEADER: XSRF_VALUE,
                 "Content-Type": "application/json;charset=utf-8",

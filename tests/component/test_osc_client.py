@@ -13,6 +13,7 @@ import contextlib
 import time
 from collections.abc import AsyncIterator
 
+import httpx
 import pytest
 
 from sphereloom.adapters.fake import scenarios
@@ -660,21 +661,58 @@ async def test_a_normal_command_id_is_accepted(runner: CommandRunner) -> None:
 async def test_a_connection_failure_is_retried_even_for_an_unsafe_command() -> None:
     """A setup failure never reached the camera, so repeating it cannot duplicate anything.
 
-    Gating this on the safe-command allowlist made a capture give up on the first
-    connection error, which contradicted the module's own stated contract.
+    This is tested with `takePicture` on purpose. An earlier version used `listFiles`,
+    which is on the safe allowlist, so it passed without ever exercising the branch it
+    claimed to cover: a test that cannot fail is worse than no test.
+
+    The failure is injected at the transport, not at the client, so every protocol
+    guarantee the client enforces stays intact.
     """
-    camera = FakeCamera(scenario=scenarios.FLAKY)
+    attempts = 0
+
+    class RefusingTwice(httpx.AsyncBaseTransport):
+        def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+            self._inner = inner
+
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            nonlocal attempts
+            attempts += 1
+            if attempts <= 2:
+                message = "connection refused"
+                raise httpx.ConnectError(message, request=request)
+            return await self._inner.handle_async_request(request)
+
+    camera = FakeCamera()
     with run_fake_camera(camera) as base_url:
-        http = OscHttpClient(base_url)
+        http = OscHttpClient(base_url, transport=RefusingTwice(httpx.AsyncHTTPTransport()))
         try:
-            # FLAKY fails the first two attempts with a server error, which for an unsafe
-            # command is not retried; the attempt budget still has to exist for setup
-            # failures, which this asserts through the safe path below.
-            payload = await http.execute("camera.listFiles")
+            payload = await http.execute("camera.takePicture")
         finally:
             await http.aclose()
 
-    assert payload["state"] == "done"
+    assert attempts == 3
+    assert payload["state"] == "inProgress"
+
+
+async def test_connection_retries_are_bounded_for_an_unsafe_command() -> None:
+    """Always retrying a setup failure must not mean retrying forever."""
+    attempts = 0
+
+    class AlwaysRefusing(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            nonlocal attempts
+            attempts += 1
+            message = "connection refused"
+            raise httpx.ConnectError(message, request=request)
+
+    http = OscHttpClient("http://127.0.0.1:9", transport=AlwaysRefusing())
+    try:
+        with pytest.raises(NotConnectedError):
+            await http.execute("camera.takePicture")
+    finally:
+        await http.aclose()
+
+    assert attempts == 3
 
 
 async def test_a_server_error_is_not_retried_for_an_unsafe_command() -> None:

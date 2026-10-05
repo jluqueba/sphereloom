@@ -119,6 +119,16 @@ def test_a_long_but_usable_path_is_accepted(workspace: Workspace) -> None:
     assert destination.read_bytes() == b"ok"
 
 
+def test_a_lone_surrogate_is_rejected_as_a_path_error(workspace: Workspace) -> None:
+    """A validator that crashes on bad input has failed at the one job it has.
+
+    A JSON escape such as \\ud800 produces a string that cannot be encoded at all, which
+    would otherwise escape the promised taxonomy as a UnicodeEncodeError.
+    """
+    with pytest.raises(PathJailError):
+        workspace.resolve("downloads/\ud800.insv")
+
+
 def test_relative_display_hides_absolute_layout(workspace: Workspace) -> None:
     """User-facing output must not leak the absolute path, which embeds a username."""
     resolved = workspace.resolve("downloads/clip.insv")

@@ -20,6 +20,7 @@ from sphereloom.domain.errors import (
     SphereLoomError,
     StorageFullError,
 )
+from sphereloom.domain.payloads import bounded_payload, bounded_text
 
 BACKEND = "osc"
 
@@ -43,41 +44,10 @@ _VENDOR_CODES: dict[str, type[SphereLoomError]] = {
 #: SphereLoom can do recovers from these, so the message has to reach the user intact.
 _OWNER_ACTION_CODES = {"unactivated", "cameraNotActivated"}
 
-#: How much of an unrecognised payload to preserve. Generous enough to identify a problem,
-#: bounded so an untrusted camera response cannot flood a log or an error envelope.
-_EXCERPT_LIMIT = 200
-_MAX_ITEMS = 20
-_MAX_DEPTH = 4
-#: Total nodes the excerpt may contain. Per-level limits alone are not a bound: twenty
-#: items at four levels deep is a hundred and sixty thousand nodes, which defeats the point.
-_MAX_NODES = 200
-
 #: Vendor code and message are attacker-adjacent input: they come from a device we do not
 #: control, and they are rendered into the public error. Both are bounded before use.
 _CODE_LIMIT = 64
 _MESSAGE_LIMIT = 300
-
-
-def _bounded(text: str, limit: int) -> str:
-    collapsed = " ".join(text.split())
-    return collapsed if len(collapsed) <= limit else collapsed[:limit] + "…"
-
-
-def _bounded_field(value: Any, limit: int) -> str:
-    """Render a vendor-supplied scalar within a bound, without materialising it first.
-
-    Calling `str()` on an arbitrary payload allocates the whole structure before anything
-    is truncated, so firmware returning a large list or object as `code` would still cause
-    an unbounded allocation. Only strings and small scalars are accepted; anything else is
-    reported as malformed rather than rendered.
-    """
-    if isinstance(value, str):
-        return _bounded(value, limit)
-    if isinstance(value, bool | int | float):
-        return _bounded(str(value), limit)
-    if value is None:
-        return ""
-    return "[malformed]"
 
 
 def map_vendor_error(
@@ -99,8 +69,8 @@ def map_vendor_error(
             details=_details(payload, command),
         )
 
-    code = _bounded_field(error.get("code"), _CODE_LIMIT)
-    message = _bounded_field(error.get("message"), _MESSAGE_LIMIT)
+    code = bounded_text(error.get("code"), _CODE_LIMIT)
+    message = bounded_text(error.get("message"), _MESSAGE_LIMIT)
 
     if code in _OWNER_ACTION_CODES:
         return InvalidArgumentError(
@@ -172,63 +142,7 @@ def _human_message(code: str, vendor_message: str, command: str | None) -> str:
 
 
 def _details(payload: Any, command: str | None) -> dict[str, Any]:
-    details: dict[str, Any] = {"vendor": _excerpt(payload)}
+    details: dict[str, Any] = {"vendor": bounded_payload(payload)}
     if command:
         details["command"] = command
     return details
-
-
-class _Budget:
-    """Counts nodes consumed while building an excerpt."""
-
-    def __init__(self) -> None:
-        self.remaining = _MAX_NODES
-
-    def take(self) -> bool:
-        if self.remaining <= 0:
-            return False
-        self.remaining -= 1
-        return True
-
-
-def _excerpt(payload: Any) -> Any:
-    """Preserve the vendor payload within an overall budget.
-
-    Strings, collection sizes, nesting depth and total node count are all bounded.
-    Per-level limits alone are not a bound: twenty items at four levels deep is a hundred
-    and sixty thousand nodes, which would flood exactly what this is meant to protect.
-    """
-    return _excerpt_bounded(payload, depth=0, budget=_Budget())
-
-
-def _excerpt_bounded(payload: Any, *, depth: int, budget: _Budget) -> Any:
-    # Budget is consumed before the depth check, not after. Short-circuiting on depth first
-    # lets every node beyond the depth limit render for free, so a broad tree produces
-    # thousands of placeholders while the budget sits untouched.
-    if not budget.take() or depth >= _MAX_DEPTH:
-        return "…"
-
-    if isinstance(payload, dict):
-        excerpt: dict[str, Any] = {}
-        for index, (key, value) in enumerate(payload.items()):
-            if index >= _MAX_ITEMS or budget.remaining <= 0:
-                excerpt["…"] = f"{len(payload) - index} more keys"
-                break
-            excerpt[_bounded(str(key), _EXCERPT_LIMIT)] = _excerpt_bounded(
-                value, depth=depth + 1, budget=budget
-            )
-        return excerpt
-
-    if isinstance(payload, list):
-        items: list[Any] = []
-        for index, value in enumerate(payload):
-            if index >= _MAX_ITEMS or budget.remaining <= 0:
-                items.append("…")
-                break
-            items.append(_excerpt_bounded(value, depth=depth + 1, budget=budget))
-        return items
-
-    if isinstance(payload, str):
-        return _bounded(payload, _EXCERPT_LIMIT)
-
-    return payload

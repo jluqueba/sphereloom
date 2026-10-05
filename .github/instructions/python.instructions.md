@@ -49,10 +49,29 @@ control, and a malformed or hostile payload must never become a crash, an unboun
 a request to somewhere we did not intend.
 
 - Validate any URL taken from a device response against the expected origin before following it.
-- Bound anything copied from a response into a message, a log or an error envelope: string length, collection size, nesting depth, and total node count. Per-level limits alone are not a bound.
+- Bound anything copied from a response into a message, a log or an error envelope using `sphereloom.domain.payloads`. Do not write a second bounding implementation: that logic existed twice here and only one copy was correct.
 - Treat an unrecognised state, code or shape as a failure, never as success. Accepting an unknown state as "done" turns a malformed reply into an empty successful result, which is the most misleading outcome available.
 - Reject non-2xx HTTP responses explicitly when redirects are not followed; a 3xx body is not content.
+- Bound the size of anything read into memory from a remote source, while reading rather than after.
 - Map every third-party transport exception onto the taxonomy, including ones raised while a caller iterates a stream.
+
+## A validator must not raise an unmapped exception
+
+Converting bad input into a structured refusal is the whole job of a validator. If it
+crashes instead, it has failed at that job and the caller gets a stack trace where a clear
+explanation was promised.
+
+- Assume every operation on untrusted input can raise, including ones that look total. `int()` raises on non-finite floats; `str.encode()` raises on a lone surrogate; `json.loads` raises `RecursionError`, not `ValueError`, on deep nesting, and accepts `NaN` and `Infinity` by default.
+- Wrap those operations and re-raise as the taxonomy error the function's contract promises.
+- Test the hostile input, not only the merely wrong input.
+
+## Anything placed in an error envelope must be JSON-serialisable by construction
+
+An envelope that cannot be serialised turns a reported failure into an unreported crash,
+which is the one thing the error path must never do.
+
+- Put only JSON scalars, lists and objects into `details`. Replace anything else with a marker rather than hoping it renders.
+- Never rely on `str()` of an untrusted value to make it safe: it materialises the whole structure before any bound applies.
 
 ## Make guarantees enforceable, not advisory
 
@@ -76,6 +95,8 @@ These are not hypothetical; each has been a real defect in this repository.
 ## Write tests that can fail
 
 - For each test, ask what would have to break for it to fail. If that is not obvious, the test is decorative.
+- **A test's name is a claim. Make it exercise that claim.** A test called "retried even for an unsafe command" that uses a safe command passes without covering anything, and its green tick actively misleads.
 - Do not synchronise on a fixed `sleep` when asserting on concurrency; wait on an explicit signal, or the test passes under favourable scheduling even when the behaviour is wrong.
 - When testing a branch that waits, keep the conditions inside the window that triggers the wait, or the branch never runs.
-- Fix the class of defect, not the single instance the reviewer named.
+- Prefer injecting at a seam the production code already defines, such as a transport or a clock, over patching internals. A test coupled to implementation detail breaks on refactoring and tests the wrong thing meanwhile.
+- Fix the class of defect, not the single instance the reviewer named. When a fix applies to one call site, search for the others before committing.

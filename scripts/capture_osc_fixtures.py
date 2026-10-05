@@ -41,6 +41,8 @@ from typing import Any
 
 import httpx
 
+from sphereloom.domain.payloads import bounded_payload, bounded_text
+
 DEFAULT_BASE_URL = "http://192.168.42.1"
 OUTPUT_DIR = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "osc"
 
@@ -115,24 +117,6 @@ FIXED_DATETIME = "2020:01:01 00:00:00+00:00"
 FILENAME_DATE = re.compile(r"(\d{8})_(\d{6})")
 
 
-#: Longest string preserved verbatim in a fixture. The camera is untrusted input: a value
-#: that is megabytes long would be written into a committed file unchanged.
-MAX_VALUE_LENGTH = 2000
-
-
-def _bounded_text(value: object, limit: int = MAX_VALUE_LENGTH) -> str:
-    """Render a camera-supplied scalar within a bound, refusing other shapes.
-
-    `str()` on an arbitrary payload materialises the whole structure before anything is
-    truncated, so a large list supplied where a name belongs would defeat the limit.
-    """
-    if isinstance(value, str):
-        return value if len(value) <= limit else value[:limit] + "…"
-    if isinstance(value, bool | int | float):
-        return str(value)
-    return "[malformed]"
-
-
 def redact(value: Any, *, found: set[str] | None = None) -> Any:
     """Return a copy of a JSON structure with sensitive material removed.
 
@@ -165,11 +149,6 @@ def redact(value: Any, *, found: set[str] | None = None) -> Any:
 
     if isinstance(value, list):
         return [redact(item, found=seen) for item in value]
-
-    if isinstance(value, str) and len(value) > MAX_VALUE_LENGTH:
-        # An unlisted key holding a very large string would otherwise be written into a
-        # committed fixture verbatim.
-        return value[:MAX_VALUE_LENGTH] + "…"
 
     return value
 
@@ -345,6 +324,25 @@ def capture(base_url: str, *, take_photo: bool, timeout: float) -> dict[str, Any
     return captured
 
 
+def _bounded_fixture(payload: Any) -> Any:
+    """Bound a captured payload before it is written to a committed file.
+
+    Redaction removes what is sensitive; this bounds what is merely enormous. A camera can
+    otherwise make the script write an arbitrarily large fixture, or exhaust recursion,
+    using many short values or one huge unknown key.
+
+    The limits are far more generous than the ones used for error envelopes, because a
+    fixture is meant to capture a realistic response, but they are still finite.
+    """
+    return bounded_payload(
+        payload,
+        max_string=2000,
+        max_items=100,
+        max_depth=12,
+        max_nodes=5000,
+    )
+
+
 def write_outputs(
     redacted: dict[str, Any], output_dir: Path, *, redacted_keys: set[str] | None = None
 ) -> list[str]:
@@ -356,9 +354,9 @@ def write_outputs(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     info = redacted.get("info", {})
-    model = _bounded_text(info.get("model", "unknown")) if isinstance(info, dict) else "unknown"
+    model = bounded_text(info.get("model", "unknown")) if isinstance(info, dict) else "unknown"
     firmware = (
-        _bounded_text(info.get("firmwareVersion", "unknown"))
+        bounded_text(info.get("firmwareVersion", "unknown"))
         if isinstance(info, dict)
         else "unknown"
     )
@@ -428,7 +426,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     found: set[str] = set()
-    redacted = {name: redact(payload, found=found) for name, payload in captured.items()}
+    redacted = {
+        name: _bounded_fixture(redact(payload, found=found)) for name, payload in captured.items()
+    }
 
     removed = write_outputs(redacted, args.output_dir, redacted_keys=found)
 
@@ -438,9 +438,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  removed stale {name}", file=sys.stderr)
 
     info = redacted.get("info", {})
-    model = _bounded_text(info.get("model", "unknown")) if isinstance(info, dict) else "unknown"
+    model = bounded_text(info.get("model", "unknown")) if isinstance(info, dict) else "unknown"
     firmware = (
-        _bounded_text(info.get("firmwareVersion", "unknown"))
+        bounded_text(info.get("firmwareVersion", "unknown"))
         if isinstance(info, dict)
         else "unknown"
     )

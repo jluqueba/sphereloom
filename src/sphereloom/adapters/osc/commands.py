@@ -253,6 +253,13 @@ def _completion(payload: Mapping[str, Any]) -> float | None:
     progress = payload.get("progress")
     if isinstance(progress, Mapping):
         completion = progress.get("completion")
-        if isinstance(completion, int | float) and not isinstance(completion, bool):
+        if (
+            isinstance(completion, int | float)
+            and not isinstance(completion, bool)
+            and math.isfinite(completion)
+        ):
+            # Non-finite values are dropped rather than logged: `json.dumps` renders them
+            # as bare NaN or Infinity, which is not valid JSON, so one malformed device
+            # value would make a log line unparseable.
             return float(completion)
     return None

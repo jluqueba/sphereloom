@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 
 import pytest
@@ -99,3 +100,46 @@ def test_configure_logging_is_idempotent(capsys: pytest.CaptureFixture[str]) -> 
     logging.getLogger("sphereloom.test").info("once")
 
     assert capsys.readouterr().err.count("once") == 1
+
+
+def test_every_log_line_is_parseable_json(capsys: pytest.CaptureFixture[str]) -> None:
+    configure_logging(level="INFO", redaction=True)
+    logging.getLogger("sphereloom.test").info("structured", extra={"context": {"bytes": 1024}})
+
+    line = capsys.readouterr().err.strip()
+    assert json.loads(line)["bytes"] == 1024
+
+
+def test_a_non_finite_value_does_not_produce_invalid_json(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`json.dumps` renders NaN bare by default, which no JSON parser accepts."""
+    configure_logging(level="INFO", redaction=True)
+    logging.getLogger("sphereloom.test").info(
+        "progress", extra={"context": {"completion": float("nan")}}
+    )
+
+    line = capsys.readouterr().err.strip()
+    assert "NaN" not in line
+    payload = json.loads(line)
+    assert payload["message"] == "progress"
+    assert "context_error" in payload
+
+
+def test_an_unserialisable_value_does_not_lose_the_log_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A log record must never fail; the message survives even when the context cannot."""
+
+    class Unserialisable:
+        def __repr__(self) -> str:
+            raise RuntimeError("repr blows up")
+
+    configure_logging(level="INFO", redaction=True)
+    logging.getLogger("sphereloom.test").info(
+        "kept", extra={"context": {"value": Unserialisable()}}
+    )
+
+    payload = json.loads(capsys.readouterr().err.strip())
+    assert payload["message"] == "kept"
+    assert "context_error" in payload

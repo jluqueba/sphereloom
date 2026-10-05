@@ -48,7 +48,11 @@ class RedactionFilter(logging.Filter):
     """Applies `redact` to the formatted message and to structured extras."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        record.msg = redact(str(record.msg))
+        try:
+            record.msg = redact(str(record.msg))
+        except Exception:  # `str()` runs arbitrary `__str__` code
+            record.msg = "<message could not be rendered>"
+            record.args = ()
         if record.args:
             record.args = tuple(
                 redact(arg) if isinstance(arg, str) else arg
@@ -64,21 +68,42 @@ class RedactionFilter(logging.Filter):
 
 
 class JsonFormatter(logging.Formatter):
-    """Emits one JSON object per line, which is both greppable and machine-readable."""
+    """Emits one JSON object per line, which is both greppable and machine-readable.
+
+    Every line this formatter produces is valid JSON, without exception. A consumer that
+    has to cope with occasional unparseable lines is not getting structured logs, and the
+    lines most likely to be malformed are the ones describing a misbehaving device, which
+    are exactly the ones worth reading.
+    """
 
     def format(self, record: logging.LogRecord) -> str:
-        payload: dict[str, Any] = {
+        try:
+            message = record.getMessage()
+        except Exception:  # a bad argument must not lose the record
+            message = "<message could not be rendered>"
+
+        base: dict[str, Any] = {
             "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
             "level": record.levelname,
             "logger": record.name,
-            "message": record.getMessage(),
+            "message": message,
         }
+        payload: dict[str, Any] = dict(base)
         context = getattr(record, "context", None)
         if isinstance(context, dict):
             payload.update(context)
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
-        return json.dumps(payload, default=str)
+
+        # `allow_nan=False` because `json.dumps` otherwise emits bare NaN and Infinity,
+        # which no JSON parser accepts: one malformed value from a device would make the
+        # line unreadable by the tooling meant to consume it.
+        try:
+            return json.dumps(payload, default=str, allow_nan=False)
+        except Exception:  # `default=str` runs arbitrary `__str__` code
+            # The fallback carries only strings built above, so it cannot fail in turn.
+            base["context_error"] = "context was not serialisable and has been dropped"
+            return json.dumps(base, allow_nan=False)
 
 
 def configure_logging(*, level: str = "INFO", redaction: bool = True) -> None:
