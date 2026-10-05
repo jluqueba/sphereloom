@@ -55,8 +55,8 @@ def _translate_os_error(exc: OSError, *, during: str) -> SphereLoomError:
 
     Translating every `OSError` to a path error was itself a defect: a full disk told the
     caller to rename the file, which is useless advice and hides a condition the taxonomy
-    already has a code for. The errno is what distinguishes them, and all three operating
-    -system touchpoints go through here so the mapping cannot diverge between them.
+    already has a code for. The errno is what distinguishes them, and all three
+    operating-system touchpoints go through here so the mapping cannot diverge between them.
     """
     if exc.errno in {errno.ENOSPC, errno.EDQUOT}:
         return StorageFullError(
@@ -125,15 +125,18 @@ class Workspace:
         if raw_bytes > MAX_PATH_LENGTH:
             raise PathJailError(
                 f"The destination path is {raw_bytes} bytes long, which is more than the "
-                f"{MAX_PATH_LENGTH} this server accepts. Use a shorter name.",
+                f"{MAX_PATH_LENGTH} bytes this server accepts. Use a shorter name.",
             )
 
-        text = raw.strip()
-        if not text:
+        # `strip()` only decides whether anything was supplied. The name itself is validated
+        # as given: stripping it first quietly turned "clip.jpg " into "clip.jpg", the very
+        # rewrite the check on each part below exists to refuse.
+        if not raw.strip():
             raise PathJailError(
                 "A destination path is required. Provide a path relative to the workspace, "
                 "for example 'downloads/clip.insv'.",
             )
+        text = raw
 
         if _FORBIDDEN_CHARS & set(text):
             raise PathJailError(
@@ -171,13 +174,15 @@ class Workspace:
                 )
 
             # Windows silently strips a trailing space or dot from a name, so `trail. /x`
-            # creates `trail\` and the final rename then has nowhere to land. A name the
-            # filesystem will quietly rewrite is not a name this server can honour, and
-            # refusing it is clearer than writing to a path the caller did not ask for.
-            if part not in {".", ".."} and part != part.rstrip(" ."):
+            # creates `trail\` and the final rename then has nowhere to land. Surrounding
+            # whitespace is refused at either end for the same reason: a name the filesystem
+            # or a caller's tooling will quietly rewrite is not a name this server can
+            # honour, and refusing it is clearer than writing to a path nobody asked for.
+            if part not in {".", ".."} and (part != part.strip() or part.endswith(".")):
                 raise PathJailError(
-                    "A part of the destination path ends with a space or a dot, which "
-                    "some filesystems silently remove. Use a name without them.",
+                    "A part of the destination path starts or ends with whitespace, or ends "
+                    "with a dot, which some filesystems silently remove. Use a name without "
+                    "them.",
                 )
 
         resolved = (self._root / candidate).expanduser().resolve()

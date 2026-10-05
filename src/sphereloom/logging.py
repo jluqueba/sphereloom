@@ -42,16 +42,24 @@ MAX_CONTEXT_ITEMS = 50
 MAX_CONTEXT_DEPTH = 6
 MAX_CONTEXT_NODES = 500
 
+#: Whitespace as it appears in a log line: a real space, tab or newline, or the escaped form
+#: `repr` writes for one. A container argument is rendered with `repr` before redaction
+#: runs, so a newline between `Bearer` and its token arrives as the two characters `\n`; a
+#: pattern that required real whitespace there let the token through.
+_SEP = r"(?:\s|\\[ntr])"
+
 #: Patterns stripped from every log record when redaction is enabled.
 _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # Bearer tokens and confirmation tokens.
-    (re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/-]{8,}=*"), r"\1" + REDACTED),
+    (re.compile(rf"(?i)\b(bearer{_SEP}+)[A-Za-z0-9._~+/-]{{8,}}=*"), r"\1" + REDACTED),
     (
-        re.compile(r"(?i)\b(token|secret|password|api[_-]?key)(\"?\s*[:=]\s*\"?)[^\s,\"'}]+"),
+        re.compile(
+            rf"(?i)\b(token|secret|password|api[_-]?key)(\"?{_SEP}*[:=]{_SEP}*\"?)[^\s,\"'}}]+"
+        ),
         r"\1\2" + REDACTED,
     ),
     # Wi-Fi network names, which identify a person's home or workplace.
-    (re.compile(r"(?i)\b(ssid)(\"?\s*[:=]\s*\"?)[^\s,\"'}]+"), r"\1\2" + REDACTED),
+    (re.compile(rf"(?i)\b(ssid)(\"?{_SEP}*[:=]{_SEP}*\"?)[^\s,\"'}}]+"), r"\1\2" + REDACTED),
     # Query strings can carry credentials and file identifiers.
     (re.compile(r"(\?)[^\s\"']{1,512}"), r"\1" + REDACTED),
     # Absolute paths leak usernames and library layout.

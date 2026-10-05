@@ -304,12 +304,15 @@ def _completion(payload: Mapping[str, Any]) -> float | None:
     if not isinstance(completion, int | float) or isinstance(completion, bool):
         return None
 
-    # The range check comes first and does the work of a finiteness check without the
-    # hazard: `math.isfinite` converts its argument to a float, which raises OverflowError
-    # for a large but perfectly valid JSON integer. Comparing against the documented 0..1
-    # range short-circuits that, and rejects NaN too, since every comparison with NaN is
-    # false. Dropping the value matters because it reaches a log record, and `json.dumps`
-    # writes a non-finite float bare, which no JSON parser accepts.
+    # An integer can only be a valid completion if it is 0 or 1, and testing that needs no
+    # conversion at all, so a huge JSON integer is dropped without ever meeting a float.
+    if isinstance(completion, int):
+        return float(completion) if completion in (0, 1) else None
+
+    # For a float, the range check does the work of a finiteness check: every comparison
+    # with NaN is false, and infinity is outside the range. Dropping the value matters
+    # because it reaches a log record, and `json.dumps` writes a non-finite float bare,
+    # which no JSON parser accepts.
     if not 0.0 <= completion <= 1.0:
         return None
-    return float(completion)
+    return completion

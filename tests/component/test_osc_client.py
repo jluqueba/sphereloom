@@ -428,6 +428,9 @@ async def test_a_file_url_pointing_off_camera_is_refused(client: OscHttpClient) 
         "http://127.0.0.1:1/secret",
         "https://127.0.0.1/secret",
         "http://evil.example/IMG.jpg",
+        # A network-path reference: no scheme, but a host. httpx kept only the path and
+        # fetched /IMG.jpg from the camera, a different file from the one named.
+        "//evil.example/IMG.jpg",
     ],
 )
 async def test_off_origin_urls_are_refused_whatever_shape_they_take(

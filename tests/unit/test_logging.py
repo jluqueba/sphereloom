@@ -448,3 +448,20 @@ def test_a_frozenset_at_the_depth_limit_still_says_frozenset(
     logging.getLogger("sphereloom.test").info("%s", [[[frozenset({1})]]])
 
     assert "frozenset({...})" in json.loads(capsys.readouterr().err.strip())["message"]
+
+
+@pytest.mark.parametrize("separator", ["\n", "\t", "\r", " "])
+def test_a_secret_split_by_escaped_whitespace_is_still_redacted(
+    capsys: pytest.CaptureFixture[str], separator: str
+) -> None:
+    """A container argument is rendered with `repr` before redaction runs.
+
+    A newline between `Bearer` and its token then arrives as the two characters `\\n`, and
+    a pattern that required real whitespace let the token through.
+    """
+    configure_logging(level="INFO", redaction=True)
+    logging.getLogger("sphereloom.test").info(
+        "%s", [f"Bearer{separator}SECRETTOKENVALUE", f"token:{separator}SECRETTOKENVALUE"]
+    )
+
+    assert "SECRETTOKENVALUE" not in capsys.readouterr().err

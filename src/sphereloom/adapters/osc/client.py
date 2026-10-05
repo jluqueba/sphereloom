@@ -377,7 +377,11 @@ class OscHttpClient:
                 backend=BACKEND,
             ) from exc
 
-        if not candidate.is_absolute_url:
+        # A relative path is resolved against the camera's own address. A network-path
+        # reference such as `//other.host/x.jpg` has no scheme but does name a host; httpx
+        # would quietly keep only its path and fetch a different file from the camera than
+        # the one the URL names. It is checked like an absolute URL instead, and refused.
+        if not candidate.is_absolute_url and not candidate.host:
             return url
 
         base = httpx.URL(self._base_url)

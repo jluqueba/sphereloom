@@ -236,7 +236,18 @@ def test_the_total_path_limit_counts_bytes_not_characters(workspace: Workspace) 
 
 @pytest.mark.parametrize(
     "name",
-    ["trail. /a.jpg", "trailing /a.jpg", "dot./a.jpg", "file. ", "name ."],
+    [
+        "trail. /a.jpg",
+        "trailing /a.jpg",
+        "dot./a.jpg",
+        "file. ",
+        "name .",
+        # Surrounding whitespace on the final part used to be stripped before this check
+        # ran, so "clip.jpg " was quietly written as "clip.jpg".
+        "clip.jpg ",
+        " clip.jpg",
+        "downloads/clip.jpg\t",
+    ],
 )
 def test_a_component_the_filesystem_would_rewrite_is_refused(
     workspace: Workspace, name: str
@@ -246,7 +257,7 @@ def test_a_component_the_filesystem_would_rewrite_is_refused(
     `trail. /a.jpg` created `trail\\` and the rename then had nowhere to go, surfacing as a
     raw FileNotFoundError after the caller had already written the data.
     """
-    with pytest.raises(PathJailError, match="space or a dot"):
+    with pytest.raises(PathJailError, match="silently remove"):
         workspace.resolve(name)
 
 
