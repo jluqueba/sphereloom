@@ -68,7 +68,7 @@ class CommandRunner:
         default_deadline: float = 30.0,
     ) -> None:
         self._client = client
-        self._monotonic = monotonic or SystemMonotonic()
+        self._monotonic = SystemMonotonic() if monotonic is None else monotonic
         self._default_deadline = _validated_deadline(default_deadline)
 
     async def run(
@@ -102,7 +102,7 @@ class CommandRunner:
             raise map_vendor_error(payload, command=name)
 
         if state == STATE_IN_PROGRESS:
-            command_id = _validated_command_id(payload.get("id"))
+            command_id = validated_command_id(payload.get("id"))
             if command_id is None:
                 # Without a usable identifier there is nothing to poll. Reporting this is
                 # better than returning an acknowledgement as though it were a result.
@@ -206,7 +206,7 @@ def _is_safe_to_repeat(command: str) -> bool:
     return command in RETRY_SAFE_COMMANDS
 
 
-def _validated_command_id(value: Any) -> str | None:
+def validated_command_id(value: Any) -> str | None:
     """Accept a command identifier only if it is a usable, bounded string.
 
     The identifier comes from a device response and is copied into poll requests, timeout

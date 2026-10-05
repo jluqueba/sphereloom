@@ -38,6 +38,7 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from sphereloom.adapters.fake.scenarios import HEALTHY, Scenario
+from sphereloom.domain.payloads import bounded_text, strict_json_loads
 
 #: A genuine one-pixel JPEG. Downloads therefore produce a file that actually opens, which
 #: matters when verifying that a transfer was byte-exact rather than merely the right size.
@@ -90,18 +91,32 @@ def _is_accepted(value: Any, candidate: Any) -> bool:
     return bool(value == candidate)
 
 
+#: Largest request body the fake will read. A camera has finite memory; so should the thing
+#: standing in for one. Without this a client can make the demo backend read without limit.
+MAX_REQUEST_BYTES = 1024 * 1024
+
+
 async def _request_object(request: Request) -> dict[str, Any] | None:
     """Parse a request body that must be a JSON object, or `None` if it is not.
 
-    A real camera answers nonsense with a 400, not a stack trace. Two inputs would
+    A real camera answers nonsense with a 400, not a stack trace. Three inputs would
     otherwise escape: a body that is valid JSON but not an object (`[1, 2]` parses, then
-    `.get` raises `AttributeError`), and one nested deeply enough that the decoder raises
+    `.get` raises `AttributeError`), one nested deeply enough that the decoder raises
     `RecursionError`, which is not a `ValueError` and so is not caught by the obvious
-    `except` clause.
+    `except` clause, and one simply too large to hold, since `request.json()` reads
+    whatever arrives before anything gets to inspect it.
     """
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > MAX_REQUEST_BYTES:
+            return None
+        chunks.append(chunk)
+
     try:
-        payload = await request.json()
-    except (json.JSONDecodeError, ValueError, RecursionError):
+        payload = strict_json_loads(b"".join(chunks))
+    except (ValueError, RecursionError):
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -251,7 +266,7 @@ class FakeCamera:
         capture_polls: int = 1,
     ) -> None:
         self.scenario = scenario
-        self.state = state or FakeCameraState()
+        self.state = FakeCameraState() if state is None else state
         self.capture_polls = capture_polls
         self._pending: dict[str, PendingCommand] = {}
         self._command_counter = 1000
@@ -507,7 +522,9 @@ class FakeCamera:
         }
         handler = handlers.get(name)
         if handler is None:
-            return self._vendor_error(name, "unknownCommand", f"Unknown command {name!r}.")
+            return self._vendor_error(
+                name, "unknownCommand", f"Unknown command {bounded_text(name, 64)}."
+            )
 
         return handler(request, parameters)
 
@@ -530,7 +547,7 @@ class FakeCamera:
                 {
                     "error": {
                         "code": "invalidParameterValue",
-                        "message": f"Unknown command id {command_id!r}.",
+                        "message": f"Unknown command id {bounded_text(command_id, 64)}.",
                     }
                 },
                 status_code=400,
@@ -701,7 +718,8 @@ class FakeCamera:
                 return self._vendor_error(
                     "camera.setOptions",
                     "invalidParameterValue",
-                    f"{value!r} is not an accepted value for {name}.",
+                    f"{bounded_text(value, 64)} is not an accepted value for "
+                    f"{bounded_text(name, 64)}.",
                 )
 
         for name, value in options.items():

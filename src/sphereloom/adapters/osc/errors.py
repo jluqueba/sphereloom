@@ -77,24 +77,25 @@ def map_vendor_error(
             "The camera reports that it is not activated. Activate it in the vendor's "
             "official mobile app once; SphereLoom cannot do this for you.",
             backend=BACKEND,
-            reason=message or None,
+            reason=message or None,  # rule-exempt(or-default): bounded_text gives "" when absent
             details=_details(payload, command),
         )
 
     error_class = _VENDOR_CODES.get(code)
     if error_class is None:
         return InternalError(
+            # rule-exempt(repr): `code` is already bounded to _CODE_LIMIT above
             f"The camera rejected the request with an unrecognised error code {code!r}. "
             "The original response is preserved for diagnosis.",
             backend=BACKEND,
-            reason=message or None,
+            reason=message or None,  # rule-exempt(or-default): bounded_text gives "" when absent
             details=_details(payload, command),
         )
 
     return error_class(
         _human_message(code, message, command),
         backend=BACKEND,
-        reason=message or None,
+        reason=message or None,  # rule-exempt(or-default): bounded_text gives "" when absent
         details=_details(payload, command),
     )
 
@@ -138,6 +139,7 @@ def _human_message(code: str, vendor_message: str, command: str | None) -> str:
 
     detail = f" The camera said: {vendor_message}" if vendor_message else ""
     suffix = f" {guidance}" if guidance else ""
+    # rule-exempt(repr): `code` is bounded to _CODE_LIMIT by the caller
     return f"{what} with {code!r}.{detail}{suffix}"
 
 

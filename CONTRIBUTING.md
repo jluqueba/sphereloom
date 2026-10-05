@@ -86,8 +86,20 @@ Before opening a PR, make sure:
 - No GPL-licensed dependency was added.
 - No Insta360 SDK binaries were committed.
 - The PR title follows Conventional Commits.
+- A **milestone** is set, and at least one `area:` label plus a type label.
 
 The repository uses a single required status check named `ci-gate`. The CI design uses change detection so documentation-only PRs can skip heavy jobs while the required gate still reports success. PRs are squash-merged using the PR title.
+
+### Milestones and labels
+
+The milestone is what makes a release reconstructible. Release notes, the `CHANGELOG.md` section and the announcement are all assembled from the pull requests in a milestone, so a PR without one disappears from the record.
+
+- Use the milestone titles from the roadmap; each one names the version it targets.
+- Add one or more `area:` labels so the changelog can be grouped by subsystem.
+- Add `release` to the PR that cuts a version.
+- If a PR fits two milestones, it is doing two things and should be split.
+
+Milestone **M2 is the first released version and the MVP**: reaching it produces a tag, a GitHub Release, a `CHANGELOG.md` entry and a public announcement together, rather than separately.
 
 ### Automated review must settle before merging
 

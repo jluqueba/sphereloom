@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import tempfile
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path, PurePath
 
 from sphereloom.domain.errors import PathJailError
@@ -69,11 +69,23 @@ class Workspace:
         # Length is checked on the raw value, before `strip()` copies it and `set()` scans
         # every character. The argument comes from a tool call, so doing either first means
         # an enormous string costs that work before the limit it violates is applied.
+        #
+        # Measured in UTF-8 bytes, not characters, because that is what the limit protects
+        # against: PATH_MAX is 4096 *bytes* on Linux, so 924 characters of emoji is 3624
+        # bytes and would be refused by the kernel after passing a character count.
         raw = str(relative)
-        if len(raw) > MAX_PATH_LENGTH:
+        try:
+            raw_bytes = len(raw.encode("utf-8"))
+        except UnicodeEncodeError as exc:
             raise PathJailError(
-                f"The destination path is longer than {MAX_PATH_LENGTH} characters. Use a "
-                "shorter name.",
+                "The destination path contains characters that cannot be encoded as a "
+                "filename. Use letters, digits, dots, dashes, underscores and slashes.",
+            ) from exc
+
+        if raw_bytes > MAX_PATH_LENGTH:
+            raise PathJailError(
+                f"The destination path is {raw_bytes} bytes long, which is more than the "
+                f"{MAX_PATH_LENGTH} this server accepts. Use a shorter name.",
             )
 
         text = raw.strip()
@@ -118,12 +130,31 @@ class Workspace:
                     "a shorter name.",
                 )
 
+            # Windows silently strips a trailing space or dot from a name, so `trail. /x`
+            # creates `trail\` and the final rename then has nowhere to land. A name the
+            # filesystem will quietly rewrite is not a name this server can honour, and
+            # refusing it is clearer than writing to a path the caller did not ask for.
+            if part not in {".", ".."} and part != part.rstrip(" ."):
+                raise PathJailError(
+                    "A part of the destination path ends with a space or a dot, which "
+                    "some filesystems silently remove. Use a name without them.",
+                )
+
         resolved = (self._root / candidate).expanduser().resolve()
         if not self._is_contained(resolved):
             raise PathJailError(
                 "The destination path resolves outside the SphereLoom workspace and was "
                 "rejected. This happens with '..' segments or with a symlink pointing "
                 "elsewhere.",
+            )
+
+        # The root itself is not a destination. `.`, `./` and `downloads/..` all resolve to
+        # it, and `atomic_write` would then place its temporary file in the root's *parent*
+        # -- outside the jail -- and write the whole payload there before the rename failed.
+        if resolved == self._root:
+            raise PathJailError(
+                "The destination path must name a file inside the workspace, not the "
+                "workspace directory itself. Supply a name, for example 'downloads/clip.insv'.",
             )
         return resolved
 
@@ -158,20 +189,56 @@ class Workspace:
                 "Use a shorter name.",
             )
 
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        # Creating the directory and the temporary file are the two places where the
+        # operating system gets the final say. Validation cannot anticipate every rule a
+        # filesystem enforces -- Windows silently strips a trailing space or dot from a
+        # directory name, and rejects a tab outright -- so a refusal here is translated
+        # rather than enumerated. Without this the caller sees a raw OSError from inside a
+        # download instead of the PathJailError this class promises.
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
 
-        handle, temp_name = tempfile.mkstemp(
-            dir=destination.parent,
-            prefix=f".{destination.name}.",
-            suffix=".partial",
-        )
+            handle, temp_name = tempfile.mkstemp(
+                dir=destination.parent,
+                prefix=f".{destination.name}.",
+                suffix=".partial",
+            )
+        except OSError as exc:
+            raise PathJailError(
+                "The destination path was refused by the filesystem. Use a name made of "
+                "letters, digits, dots, dashes and underscores, without trailing spaces "
+                "or dots.",
+            ) from exc
+
         os.close(handle)
         temp_path = Path(temp_name)
         try:
             yield temp_path, destination
-            temp_path.replace(destination)
+            # The rename is the third place the operating system gets the final say, and
+            # guarding only the first two moved the failure here rather than removing it.
+            try:
+                temp_path.replace(destination)
+            except OSError as exc:
+                raise PathJailError(
+                    "The destination path was refused by the filesystem when the download "
+                    "was moved into place. Nothing partial was left behind.",
+                ) from exc
         except BaseException:
-            temp_path.unlink(missing_ok=True)
+            # Every exit that is not a clean completion must remove the partial file,
+            # including cancellation and KeyboardInterrupt: a half-written download left
+            # under the final name would look like a complete one. The exception is
+            # re-raised unchanged.
+            #
+            # The cleanup is itself guarded. On Windows, unlinking a file another handle
+            # still holds raises PermissionError, which would replace the in-flight
+            # exception with a raw OSError *and* abandon the partial file -- both of the
+            # outcomes this block exists to prevent.
+            # `contextlib.suppress` would be shorter but would move this reasoning away
+            # from the code it explains: the original failure is what matters, and the
+            # `.partial` suffix exists so a leftover is recognisable rather than mistaken
+            # for a finished download.
+            with suppress(OSError):
+                temp_path.unlink(missing_ok=True)
             raise
 
     def _is_contained(self, resolved: Path) -> bool:

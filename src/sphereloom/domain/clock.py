@@ -53,7 +53,7 @@ class FakeClock:
     """A manually advanced wall clock for tests."""
 
     def __init__(self, start: datetime | None = None) -> None:
-        self._now = start or datetime(2026, 1, 1, tzinfo=UTC)
+        self._now = datetime(2026, 1, 1, tzinfo=UTC) if start is None else start
 
     def now(self) -> datetime:
         return self._now

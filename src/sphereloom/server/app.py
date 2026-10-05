@@ -55,7 +55,7 @@ class HealthReport(BaseModel):
 
 def build_server(settings: Settings | None = None) -> MCPServer[AppContext]:
     """Construct the MCP server and register its tools."""
-    resolved = settings or load_settings()
+    resolved = load_settings() if settings is None else settings
 
     @asynccontextmanager
     async def lifespan(_: MCPServer[AppContext]) -> AsyncIterator[AppContext]:

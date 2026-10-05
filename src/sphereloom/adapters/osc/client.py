@@ -127,7 +127,7 @@ class OscHttpClient:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
-        self._monotonic = monotonic or SystemMonotonic()
+        self._monotonic = SystemMonotonic() if monotonic is None else monotonic
         # The *client* is constructed here rather than injected, because accepting an
         # outside client would let a caller bypass every protocol setting below -- the
         # mandatory header, the explicit timeouts, the redirect policy -- while this class

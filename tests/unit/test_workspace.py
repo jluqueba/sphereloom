@@ -85,13 +85,13 @@ def test_an_absurdly_long_path_is_rejected(workspace: Workspace) -> None:
 
     A clear refusal beats an operating-system error raised halfway through a download.
     """
-    with pytest.raises(PathJailError, match="longer than"):
+    with pytest.raises(PathJailError, match="more than the"):
         workspace.resolve("a" * (MAX_PATH_LENGTH + 1))
 
 
 def test_a_single_overlong_component_is_rejected(workspace: Workspace) -> None:
     """A total-length check alone lets one enormous component through."""
-    with pytest.raises(PathJailError, match="longer than"):
+    with pytest.raises(PathJailError, match="One part of the destination path"):
         workspace.resolve("downloads/" + "a" * (MAX_COMPONENT_BYTES + 1) + ".insv")
 
 
@@ -99,7 +99,7 @@ def test_a_multibyte_component_is_measured_in_bytes(workspace: Workspace) -> Non
     """Filesystems cap a name in bytes, so 255 multibyte characters is still too long."""
     name = "ñ" * 200  # 400 bytes in UTF-8
 
-    with pytest.raises(PathJailError, match="longer than"):
+    with pytest.raises(PathJailError, match="One part of the destination path"):
         workspace.resolve(f"downloads/{name}.insv")
 
 
@@ -209,8 +209,66 @@ def test_an_enormous_raw_path_is_rejected_before_it_is_scanned(workspace: Worksp
     huge = "a" * 50_000_000
 
     started = time.monotonic()
-    with pytest.raises(PathJailError, match="longer than"):
+    with pytest.raises(PathJailError, match="more than the"):
         workspace.resolve(huge)
     elapsed = time.monotonic() - started
 
     assert elapsed < 1.0
+
+
+def test_the_total_path_limit_counts_bytes_not_characters(workspace: Workspace) -> None:
+    """PATH_MAX is 4096 *bytes* on Linux, so a character count is not the same limit.
+
+    924 characters of emoji is 3624 bytes: it passes a character check and is then refused
+    by the kernel, which is the failure the limit exists to prevent.
+    """
+    emoji_path = "/".join(["\U0001f600" * 60] * 15 + ["short.jpg"])
+
+    assert len(emoji_path) < MAX_PATH_LENGTH
+    assert len(emoji_path.encode("utf-8")) > MAX_PATH_LENGTH
+
+    with pytest.raises(PathJailError, match="more than the"):
+        workspace.resolve(emoji_path)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["trail. /a.jpg", "trailing /a.jpg", "dot./a.jpg", "file. ", "name ."],
+)
+def test_a_component_the_filesystem_would_rewrite_is_refused(
+    workspace: Workspace, name: str
+) -> None:
+    """Windows silently strips a trailing space or dot, so the write lands elsewhere.
+
+    `trail. /a.jpg` created `trail\\` and the rename then had nowhere to go, surfacing as a
+    raw FileNotFoundError after the caller had already written the data.
+    """
+    with pytest.raises(PathJailError, match="space or a dot"):
+        workspace.resolve(name)
+
+
+def test_a_name_the_filesystem_refuses_becomes_a_path_jail_error(
+    workspace: Workspace,
+) -> None:
+    """Validation cannot anticipate every filesystem rule, so a refusal is translated.
+
+    A tab passes `resolve()` and is then rejected by the kernel, which surfaced as a raw
+    OSError from inside a download instead of the PathJailError this class promises.
+    """
+    name = "a\tb/c.jpg"
+    workspace.resolve(name)
+
+    with pytest.raises(PathJailError), workspace.atomic_write(name):
+        pass  # pragma: no cover - the context manager raises on entry
+
+
+@pytest.mark.parametrize("name", [".", "./", "downloads/..", "a/../"])
+def test_the_workspace_root_itself_is_not_a_destination(workspace: Workspace, name: str) -> None:
+    """These all resolve to the root, and `atomic_write` would then write outside the jail.
+
+    The temporary file is created in `destination.parent`, which for the root is the
+    workspace's *parent* directory: the whole payload lands outside before the rename
+    fails.
+    """
+    with pytest.raises(PathJailError, match="not the workspace directory itself"):
+        workspace.resolve(name)

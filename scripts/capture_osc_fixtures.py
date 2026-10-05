@@ -41,6 +41,7 @@ from typing import Any
 
 import httpx
 
+from sphereloom.adapters.osc.commands import validated_command_id
 from sphereloom.domain.payloads import bounded_payload, bounded_text, strict_json_loads
 
 DEFAULT_BASE_URL = "http://192.168.42.1"
@@ -295,11 +296,16 @@ def _poll_until_done(
         state = body.get("state") if isinstance(body, dict) else None
         if state in {"done", "error"}:
             return body
+        # Rechecked after the request: a poll that answers just past the deadline would
+        # otherwise sleep and go round again, overshooting by a whole interval.
+        if time.monotonic() - started >= deadline_seconds:
+            break
         time.sleep(interval)
 
     message = (
-        f"Command {command_id} did not finish within {deadline_seconds:.0f}s. "
-        "The camera may still be writing the file; nothing was left in a bad state."
+        f"Command {bounded_text(command_id, 64)} did not finish within "
+        f"{deadline_seconds:.0f}s. The camera may still be writing the file; nothing was "
+        "left in a bad state."
     )
     raise TimeoutError(message)
 
@@ -344,18 +350,25 @@ def capture(base_url: str, *, take_photo: bool, timeout: float) -> dict[str, Any
             # The acknowledgement only says the capture started. The terminal response is
             # the one carrying fileUrl and the file-group fields, and that is precisely the
             # shape the fake camera has to be checked against, so record both.
-            command_id = acknowledgement.get("id")
-            if command_id:
+            #
+            # The identifier is validated rather than used as it arrives. `_request_json`
+            # returns whatever the camera sent, so `.get` on a list raises AttributeError,
+            # `str()` on an object stringifies its repr into a poll request, and a falsy
+            # but legitimate value would silently skip polling.
+            command_id = validated_command_id(
+                acknowledgement.get("id") if isinstance(acknowledgement, dict) else None
+            )
+            if command_id is not None:
                 print(f"  POST /osc/commands/status (polling {command_id})", file=sys.stderr)
                 try:
                     captured["take_picture_result"] = _poll_until_done(
-                        client, str(command_id), deadline_seconds=CAPTURE_DEADLINE_SECONDS
+                        client, command_id, deadline_seconds=CAPTURE_DEADLINE_SECONDS
                     )
                 except (TimeoutError, httpx.HTTPError, CaptureError) as exc:
                     print(f"  capture did not complete: {exc}", file=sys.stderr)
             else:
                 print(
-                    "  no command id returned; recording the acknowledgement only",
+                    "  no usable command id returned; recording the acknowledgement only",
                     file=sys.stderr,
                 )
 
@@ -424,7 +437,7 @@ def write_outputs(
         "firmware_version": firmware,
         "recorded_at": datetime.now(UTC).strftime("%Y-%m-%d"),
         "fixtures": sorted(redacted),
-        "redacted_keys": sorted(redacted_keys or set()),
+        "redacted_keys": sorted(set() if redacted_keys is None else redacted_keys),
         "note": (
             "Recorded from a real camera and redacted by scripts/capture_osc_fixtures.py. "
             "Serial numbers, thumbnails and filename dates are removed or normalised. "
@@ -492,6 +505,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         f"\nCaptured {model}, firmware {firmware}."
+        # rule-exempt(or-default): an empty join genuinely means "nothing was redacted"
         f"\nRedacted keys: {', '.join(sorted(found)) or 'none found'}"
         f"\nReview every file before committing.",
         file=sys.stderr,

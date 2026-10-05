@@ -49,10 +49,31 @@ $reviewsRaw = gh api "repos/$Repository/pulls/$PullRequest/reviews" --paginate -
 if ($LASTEXITCODE -ne 0) {
     throw "Could not read the reviews of PR $PullRequest."
 }
-$reviews = $reviewsRaw | ConvertFrom-Json
+
+# `--slurp` returns an array of PAGES, not a flat array of reviews. With a single page
+# PowerShell's pipeline unrolling hides that; from the second page onwards `-Last 1` would
+# select a whole page, `.body` would member-enumerate into an array, and the regex below
+# would match whichever review in that page happened to come first. That produces a CLEAN
+# verdict from a stale review, which is the one outcome this script must never produce.
+$reviews = [System.Collections.Generic.List[object]]::new()
+foreach ($page in ($reviewsRaw | ConvertFrom-Json)) {
+    if ($page -is [System.Collections.IEnumerable] -and $page -isnot [string]) {
+        foreach ($review in $page) { $reviews.Add($review) }
+    }
+    else {
+        $reviews.Add($page)
+    }
+}
+
 $latest = $reviews |
     Where-Object { $_.user.login -like "*opilot*" -and $_.body } |
     Select-Object -Last 1
+
+# Fail closed if flattening did not produce a single review: a `body` that is not one
+# string means an array slipped through, and every check below would be meaningless.
+if ($latest -and $latest.body -isnot [string]) {
+    throw "Expected a single review, got a collection. The pagination flattening is wrong."
+}
 
 $findingCount = $null
 $missedCount = $null
@@ -128,7 +149,10 @@ $cursor = $null
 try {
     do {
         $ghArgs = @("graphql", "-F", "owner=$owner", "-F", "repo=$repo", "-F", "num=$PullRequest", "-F", "query=@$queryFile")
-        $ghArgs += if ($cursor) { @("-F", "after=$cursor") } else { @("-F", "after=") }
+        # The cursor variable is omitted on the first page rather than passed empty. An
+        # empty string is not a connection cursor; GitHub tolerates it today, but relying
+        # on that is relying on undocumented behaviour.
+        if ($cursor) { $ghArgs += @("-F", "after=$cursor") }
 
         $raw = gh api @ghArgs
         if ($LASTEXITCODE -ne 0) {

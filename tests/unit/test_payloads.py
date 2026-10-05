@@ -18,6 +18,7 @@ from sphereloom.domain.payloads import (
     MAX_NODES,
     bounded_payload,
     bounded_text,
+    strict_json_loads,
 )
 
 
@@ -268,3 +269,32 @@ def test_a_value_padded_past_the_scan_budget_is_marked_as_truncated() -> None:
     padded = " " * 10_000 + "visible"
 
     assert bounded_text(padded, 64) == ELLIPSIS
+
+
+def test_an_overflowing_literal_does_not_reach_the_message_unbounded() -> None:
+    """The literal is raw device text with no length of its own.
+
+    `1.` followed by two million zeroes and `e400` is valid JSON, and `!r` copied all of it
+    into an exception the capture script prints.
+    """
+    huge = "1." + "0" * 2_000_000 + "e400"
+
+    with pytest.raises(ValueError, match="overflows") as caught:
+        strict_json_loads('{"v": ' + huge + "}")
+
+    assert len(str(caught.value)) < 500
+
+
+def test_a_non_finite_constant_is_still_reported_by_name() -> None:
+    for token in ("NaN", "Infinity", "-Infinity"):
+        with pytest.raises(ValueError, match="non-finite") as caught:
+            strict_json_loads('{"v": ' + token + "}")
+        assert token in str(caught.value)
+
+
+def test_a_usable_document_still_decodes() -> None:
+    assert strict_json_loads('{"a": 1, "b": 2.5, "c": [true, null]}') == {
+        "a": 1,
+        "b": 2.5,
+        "c": [True, None],
+    }

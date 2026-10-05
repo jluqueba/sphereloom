@@ -70,7 +70,7 @@ class SphereLoomError(Exception):
         self.reason = reason
         self.docs_url = docs_url
         self.available_in = available_in
-        self.details: dict[str, JsonValue] = details or {}
+        self.details: dict[str, JsonValue] = {} if details is None else details
         self.retryable = self.default_retryable if retryable is None else retryable
 
     def to_envelope(self) -> dict[str, JsonValue]:

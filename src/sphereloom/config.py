@@ -18,6 +18,7 @@ from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from sphereloom.domain.errors import InvalidArgumentError
+from sphereloom.domain.payloads import bounded_text
 
 ENV_PREFIX = "SPHERELOOM_"
 
@@ -101,8 +102,11 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_base_url(cls, value: str) -> str:
         if not value.startswith(("http://", "https://")):
+            # Bounded: the value comes from the environment, and an operator who exports a
+            # megabyte by mistake should get a readable error, not a wall of text.
             message = (
-                f"{ENV_PREFIX}OSC_BASE_URL must start with http:// or https://, got {value!r}."
+                f"{ENV_PREFIX}OSC_BASE_URL must start with http:// or https://, "
+                f"got {bounded_text(value, 120)}."
             )
             raise ValueError(message)
         return value.rstrip("/")
@@ -127,7 +131,8 @@ class Settings(BaseSettings):
 
         if not self.is_loopback_host and not self.http_allow_non_loopback:
             message = (
-                f"{ENV_PREFIX}HTTP_HOST={self.http_host!r} is not a loopback address. "
+                f"{ENV_PREFIX}HTTP_HOST={bounded_text(self.http_host, 120)} is not a "
+                f"loopback address. "
                 f"Binding beyond loopback exposes camera control to your network, so it "
                 f"requires {ENV_PREFIX}HTTP_ALLOW_NON_LOOPBACK=true as an explicit "
                 "acknowledgement of that risk."

@@ -63,11 +63,16 @@ def strict_json_loads(data: bytes | str) -> Any:
         ValueError: for malformed JSON, and for any non-finite number.
         RecursionError: for input nested deeply enough to exhaust the decoder.
     """
+    # rule-exempt(json): this IS the strict decoder every other caller must go through
     return json.loads(data, parse_constant=_reject_non_finite, parse_float=_finite_float)
 
 
 def _reject_non_finite(constant: str) -> NoReturn:
-    message = f"The payload contains the non-finite JSON constant {constant!r}."
+    # The decoder only ever passes the three bare tokens, each at most nine characters.
+    message = (
+        "The payload contains the non-finite JSON constant "
+        f"{constant!r}."  # rule-exempt(repr): the decoder passes NaN, Infinity or -Infinity
+    )
     raise ValueError(message)
 
 
@@ -76,10 +81,17 @@ def _finite_float(literal: str) -> float:
 
     `parse_constant` only ever sees the bare tokens, so a well-formed literal such as
     `1e400` bypasses it completely.
+
+    The literal is bounded before it reaches the message. It is raw text from the device
+    and has no length limit of its own: `1.` followed by two million zeroes and `e400` is
+    valid JSON, and `!r` would copy all of it into an exception that the capture script
+    prints and the error path renders.
     """
     value = float(literal)
     if not math.isfinite(value):
-        message = f"The payload contains the number literal {literal!r}, which overflows."
+        message = (
+            f"The payload contains the number literal {bounded_text(literal, 64)}, which overflows."
+        )
         raise ValueError(message)
     return value
 

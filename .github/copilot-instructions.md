@@ -185,6 +185,16 @@
 - Workflows should set `timeout-minutes`.
 - Keep Dependabot updates grouped and conventional-commit friendly.
 
+## Pull request metadata
+
+Every pull request carries a milestone and at least one area label, set when it is opened rather than at merge time. The milestone is what makes a release reconstructible: the GitHub Release notes, the CHANGELOG section and the announcement are all assembled from the pull requests in that milestone.
+
+- **Milestone**: the milestone the work delivers, named exactly as in the roadmap table in `docs/internal/envisioning/vision.md`. Each milestone description names its target version.
+- **Labels**: one or more `area: *` labels, plus a type label (`enhancement`, `bug`, `documentation`). Add `release` to a pull request that cuts a version.
+- A pull request that spans two milestones is too large; split it.
+
+Milestones double as release groupings. M2 is the first released version (0.1.0) and is the MVP: it is the point at which a tag, a GitHub Release, a CHANGELOG entry and a LinkedIn post are produced together, following `docs/internal/process/release-communication.md`.
+
 ## Pull request completion
 
 - Copilot code review runs on every push to an open pull request (`review_on_push`).

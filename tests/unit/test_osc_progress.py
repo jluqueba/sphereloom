@@ -16,8 +16,8 @@ import pytest
 from sphereloom.adapters.osc.commands import (
     _completion,
     _results,
-    _validated_command_id,
     _validated_deadline,
+    validated_command_id,
 )
 from sphereloom.domain.errors import InternalError, InvalidArgumentError
 
@@ -111,7 +111,7 @@ def test_an_enormous_padded_command_id_is_rejected_without_being_normalised() ->
     padded = " " * 50_000_000 + "abc"
 
     started = time.monotonic()
-    assert _validated_command_id(padded) is None
+    assert validated_command_id(padded) is None
     assert time.monotonic() - started < 1.0
 
 
