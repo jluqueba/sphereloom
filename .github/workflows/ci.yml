@@ -130,9 +130,13 @@ jobs:
       - name: Evaluate results
         env:
           RESULTS: ${{ toJSON(needs) }}
+        # An allow-list, not a deny-list. A matrix job whose runner never arrived reported
+        # the result "abandoned", which a check for "failure" or "cancelled" let through, so
+        # the gate passed a commit with a job that never ran. Anything other than success,
+        # or a skip because the change did not touch that area, fails the gate.
         run: |
           echo "$RESULTS"
-          if echo "$RESULTS" | grep -qE '"result": "(failure|cancelled)"'; then
+          if ! echo "$RESULTS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' > /dev/null; then
             echo "::error::One or more CI jobs did not succeed."
             exit 1
           fi
