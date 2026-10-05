@@ -473,6 +473,12 @@ class FakeCamera:
         if rejected is not None:
             return rejected
 
+        # A redirect a client is not allowed to follow. Real firmware has been known to
+        # answer this way, and a downloader that trusted the body would write the redirect
+        # page to disk under a media filename.
+        if name == "redirect-me.jpg":
+            return Response(status_code=302, headers={"Location": "/elsewhere.jpg"})
+
         match = next((f for f in self.state.files if f.name == name), None)
         if match is None:
             return Response("Not Found", status_code=404)

@@ -270,9 +270,13 @@ class OscHttpClient:
                     "current file URLs.",
                     backend=BACKEND,
                 )
-            if response.status_code >= 400:
+            if not response.is_success:
+                # Anything outside 2xx, redirects included. Redirects are deliberately not
+                # followed, so a 3xx body is not file content; persisting it would write a
+                # redirect page to disk under a media filename.
                 raise NotConnectedError(
-                    f"The camera refused the download with HTTP {response.status_code}.",
+                    f"The camera answered the download with HTTP {response.status_code} "
+                    "instead of file content.",
                     backend=BACKEND,
                     details={"status_code": response.status_code},
                 )
@@ -300,7 +304,15 @@ class OscHttpClient:
         Relative paths are accepted and resolved against the base URL. Absolute URLs must
         match the configured scheme, host and port exactly.
         """
-        candidate = httpx.URL(url)
+        try:
+            candidate = httpx.URL(url)
+        except (httpx.InvalidURL, ValueError) as exc:
+            # The URL came from a device response, so a malformed one is a camera problem,
+            # not a programming error. It gets a taxonomy answer like everything else.
+            raise InvalidArgumentError(
+                "The camera supplied a file URL that could not be parsed.",
+                backend=BACKEND,
+            ) from exc
 
         if not candidate.is_absolute_url:
             return url

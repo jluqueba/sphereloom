@@ -161,6 +161,25 @@ def test_a_deeply_nested_payload_is_bounded_by_depth() -> None:
     assert len(rendered) < 2000
 
 
+def test_a_broad_and_deep_payload_is_bounded_by_total_size() -> None:
+    """Per-level limits are not a bound.
+
+    Twenty items at four levels deep is a hundred and sixty thousand nodes, which would
+    flood exactly what the excerpt exists to protect.
+    """
+
+    def branching(depth: int) -> object:
+        if depth == 0:
+            return "leaf"
+        return {f"key{index}": branching(depth - 1) for index in range(20)}
+
+    payload = {"error": {"code": "noFreeSpace", "message": "full"}, "tree": branching(5)}
+
+    rendered = str(map_vendor_error(payload).details["vendor"])
+
+    assert len(rendered) < 10_000
+
+
 def test_every_mapped_error_carries_the_backend() -> None:
     """Results and errors name the backend so an agent can explain which path failed."""
     for code in ("disabledCommand", "noFreeSpace", "unknownToUs"):

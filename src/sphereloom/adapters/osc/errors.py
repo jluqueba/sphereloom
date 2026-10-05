@@ -48,6 +48,9 @@ _OWNER_ACTION_CODES = {"unactivated", "cameraNotActivated"}
 _EXCERPT_LIMIT = 200
 _MAX_ITEMS = 20
 _MAX_DEPTH = 4
+#: Total nodes the excerpt may contain. Per-level limits alone are not a bound: twenty
+#: items at four levels deep is a hundred and sixty thousand nodes, which defeats the point.
+_MAX_NODES = 200
 
 #: Vendor code and message are attacker-adjacent input: they come from a device we do not
 #: control, and they are rendered into the public error. Both are bounded before use.
@@ -158,25 +161,53 @@ def _details(payload: Any, command: str | None) -> dict[str, Any]:
     return details
 
 
-def _excerpt(payload: Any, *, depth: int = 0) -> Any:
+class _Budget:
+    """Counts nodes consumed while building an excerpt."""
+
+    def __init__(self) -> None:
+        self.remaining = _MAX_NODES
+
+    def take(self) -> bool:
+        if self.remaining <= 0:
+            return False
+        self.remaining -= 1
+        return True
+
+
+def _excerpt(payload: Any) -> Any:
     """Preserve the vendor payload within an overall budget.
 
-    Strings, collection sizes and nesting depth are all bounded. Truncating only strings
-    would leave a wide, shallow object -- hundreds of short keys -- almost unchanged, which
-    is just as effective at flooding an error envelope.
+    Strings, collection sizes, nesting depth and total node count are all bounded.
+    Per-level limits alone are not a bound: twenty items at four levels deep is a hundred
+    and sixty thousand nodes, which would flood exactly what this is meant to protect.
     """
-    if depth >= _MAX_DEPTH:
+    return _excerpt_bounded(payload, depth=0, budget=_Budget())
+
+
+def _excerpt_bounded(payload: Any, *, depth: int, budget: _Budget) -> Any:
+    # Budget is consumed before the depth check, not after. Short-circuiting on depth first
+    # lets every node beyond the depth limit render for free, so a broad tree produces
+    # thousands of placeholders while the budget sits untouched.
+    if not budget.take() or depth >= _MAX_DEPTH:
         return "…"
 
     if isinstance(payload, dict):
-        items = list(payload.items())[:_MAX_ITEMS]
-        excerpt = {key: _excerpt(value, depth=depth + 1) for key, value in items}
-        if len(payload) > _MAX_ITEMS:
-            excerpt["…"] = f"{len(payload) - _MAX_ITEMS} more keys"
+        excerpt: dict[str, Any] = {}
+        for index, (key, value) in enumerate(payload.items()):
+            if index >= _MAX_ITEMS or budget.remaining <= 0:
+                excerpt["…"] = f"{len(payload) - index} more keys"
+                break
+            excerpt[str(key)] = _excerpt_bounded(value, depth=depth + 1, budget=budget)
         return excerpt
 
     if isinstance(payload, list):
-        return [_excerpt(item, depth=depth + 1) for item in payload[:_MAX_ITEMS]]
+        items: list[Any] = []
+        for index, value in enumerate(payload):
+            if index >= _MAX_ITEMS or budget.remaining <= 0:
+                items.append("…")
+                break
+            items.append(_excerpt_bounded(value, depth=depth + 1, budget=budget))
+        return items
 
     if isinstance(payload, str):
         return _bounded(payload, _EXCERPT_LIMIT)

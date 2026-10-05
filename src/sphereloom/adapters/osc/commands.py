@@ -117,8 +117,9 @@ class CommandRunner:
             return deadline_seconds - (self._monotonic.elapsed() - started)
 
         def expired() -> OperationTimeoutError:
+            budget = _format_seconds(deadline_seconds)
             return OperationTimeoutError(
-                f"{name} did not report completion within {deadline_seconds:.0f} seconds. "
+                f"{name} did not report completion within {budget} seconds. "
                 f"The camera may still be writing the file. Its command id is "
                 f"{command_id}, which you can poll directly if needed.",
                 backend=BACKEND,
@@ -172,6 +173,17 @@ class CommandRunner:
                     }
                 },
             )
+
+
+def _format_seconds(value: float) -> str:
+    """Render a duration without rounding a fractional budget away.
+
+    `:.0f` turns a 0.5-second deadline into "0 seconds", which reads as a bug report rather
+    than an explanation of what was configured.
+    """
+    if value == int(value):
+        return str(int(value))
+    return f"{value:g}"
 
 
 def _validated_deadline(seconds: float) -> float:

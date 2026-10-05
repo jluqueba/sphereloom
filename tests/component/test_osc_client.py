@@ -555,13 +555,16 @@ async def test_a_deadline_is_not_exceeded_by_a_slow_poll() -> None:
         runner = CommandRunner(http)
         started = time.monotonic()
         try:
-            with pytest.raises(OperationTimeoutError):
+            with pytest.raises(OperationTimeoutError) as caught:
                 await runner.run("camera.takePicture", deadline_seconds=0.5)
             elapsed = time.monotonic() - started
         finally:
             await http.aclose()
 
     assert elapsed < 2.0, f"the deadline was exceeded by {elapsed - 0.5:.1f}s"
+    # A fractional budget must survive into the message: ":.0f" would report "0 seconds",
+    # which reads as a bug rather than an explanation of what was configured.
+    assert "0.5 seconds" in caught.value.message
 
 
 # ---------------------------------------------------------------- streaming failures
@@ -610,3 +613,28 @@ async def test_a_stalled_download_maps_to_the_timeout_taxonomy() -> None:
                     pass  # pragma: no cover - the context manager raises on entry
         finally:
             await http.aclose()
+
+
+async def test_a_redirect_is_not_served_as_file_content() -> None:
+    """Redirects are deliberately not followed, so a 3xx body is not file content.
+
+    Letting it through would write a redirect page to disk under a media filename.
+    """
+    camera = FakeCamera()
+    with run_fake_camera(camera) as base_url:
+        http = OscHttpClient(base_url)
+        try:
+            with pytest.raises(NotConnectedError) as caught:
+                async with http.stream("/DCIM/Camera01/redirect-me.jpg"):
+                    pass  # pragma: no cover - the context manager raises on entry
+        finally:
+            await http.aclose()
+
+    assert caught.value.details["status_code"] == 302
+
+
+async def test_a_malformed_file_url_is_reported_not_crashed(client: OscHttpClient) -> None:
+    """The URL came from a device response, so a malformed one is a camera problem."""
+    with pytest.raises(InvalidArgumentError):
+        async with client.stream("http://[not-a-valid-host/file.jpg"):
+            pass  # pragma: no cover - the context manager raises on entry
