@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from sphereloom.adapters.osc.errors import map_vendor_error
+from sphereloom.adapters.osc.errors import _VENDOR_CODES, map_vendor_error
 from sphereloom.domain.errors import (
     CameraBusyError,
     ErrorCode,
@@ -16,6 +16,7 @@ from sphereloom.domain.errors import (
     InvalidArgumentError,
     NotFoundError,
     StorageFullError,
+    StorageUnavailableError,
 )
 
 
@@ -27,22 +28,36 @@ def _error(code: str, message: str = "something happened") -> dict[str, object]:
     }
 
 
-@pytest.mark.parametrize(
-    ("vendor_code", "expected"),
-    [
-        ("disabledCommand", CameraBusyError),
-        ("invalidParameterName", InvalidArgumentError),
-        ("invalidParameterValue", InvalidArgumentError),
-        ("missingParameter", InvalidArgumentError),
-        ("noFreeSpace", StorageFullError),
-        ("fileNotFound", NotFoundError),
-        ("powerOffSequenceRunning", CameraBusyError),
-    ],
-)
+#: The mapping each documented vendor code must produce, stated independently of the
+#: implementation so a wrong entry in the table fails here rather than being copied.
+EXPECTED_MAPPING: dict[str, type[Exception]] = {
+    "disabledCommand": CameraBusyError,
+    "invalidParameterName": InvalidArgumentError,
+    "invalidParameterValue": InvalidArgumentError,
+    "missingParameter": InvalidArgumentError,
+    "noFreeSpace": StorageFullError,
+    "cardNotFound": StorageUnavailableError,
+    "fileNotFound": NotFoundError,
+    "unexpected": InternalError,
+    "powerOffSequenceRunning": CameraBusyError,
+    "serviceUnavailable": CameraBusyError,
+}
+
+
+@pytest.mark.parametrize(("vendor_code", "expected"), list(EXPECTED_MAPPING.items()))
 def test_documented_vendor_codes_map_to_the_taxonomy(
     vendor_code: str, expected: type[Exception]
 ) -> None:
-    assert isinstance(map_vendor_error(_error(vendor_code)), expected)
+    assert type(map_vendor_error(_error(vendor_code))) is expected
+
+
+def test_every_mapped_vendor_code_has_a_stated_expectation() -> None:
+    """A vendor code added to the table without an expectation here goes untested.
+
+    `cardNotFound` was mapped to `storage_full` for exactly that reason: it was in the
+    table and missing from the list above, so nothing checked what it meant.
+    """
+    assert set(_VENDOR_CODES) == set(EXPECTED_MAPPING)
 
 
 def test_an_unknown_vendor_code_becomes_internal_rather_than_a_guess() -> None:

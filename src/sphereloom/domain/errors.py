@@ -30,6 +30,7 @@ class ErrorCode(StrEnum):
     TIMEOUT = "timeout"
     RATE_LIMITED = "rate_limited"
     STORAGE_FULL = "storage_full"
+    STORAGE_UNAVAILABLE = "storage_unavailable"
     JOB_FAILED = "job_failed"
     INTERNAL = "internal"
 
@@ -104,21 +105,34 @@ class UnsupportedCapabilityError(SphereLoomError):
 
 
 class NotConnectedError(SphereLoomError):
-    """The camera is unreachable, or the endpoint is not a spherical camera."""
+    """The camera could not be reached, or could not serve the request.
+
+    It is unreachable, the endpoint is not a spherical camera, the connection dropped, or
+    it answered with a server error while restarting or overloaded.
+    """
 
     code = ErrorCode.NOT_CONNECTED
     default_retryable = True
 
 
 class CameraBusyError(SphereLoomError):
-    """The camera is already running a capture or another command."""
+    """The camera cannot accept the command right now.
+
+    It is running a capture or another command, is temporarily unavailable, or is shutting
+    down.
+    """
 
     code = ErrorCode.CAMERA_BUSY
     default_retryable = True
 
 
 class InvalidArgumentError(SphereLoomError):
-    """Tool input failed validation before any device call was attempted."""
+    """The request cannot be carried out as given.
+
+    Either it failed SphereLoom's own validation before any device call, or the camera
+    rejected it: an invalid or missing parameter, or a precondition only the owner can
+    satisfy on the device, such as activating it.
+    """
 
     code = ErrorCode.INVALID_ARGUMENT
 
@@ -142,13 +156,22 @@ class ConfirmationInvalidError(SphereLoomError):
 
 
 class PermissionDeniedError(SphereLoomError):
-    """The operation is disabled by configuration."""
+    """The operation is not permitted.
+
+    Either SphereLoom's configuration disables it, as with deletion until it is enabled, or
+    the host refuses it because of the permissions on the configured workspace.
+    """
 
     code = ErrorCode.PERMISSION_DENIED
 
 
 class PathJailError(SphereLoomError):
-    """The resolved destination escapes the configured workspace."""
+    """The destination is outside the workspace, or is not a usable file name inside it.
+
+    It escapes the workspace through `..` or a symlink, is absolute, names the workspace
+    directory itself, is too long or cannot be encoded, contains a forbidden character or a
+    part ending in a space or a dot, or was refused by the filesystem for its name.
+    """
 
     code = ErrorCode.PATH_OUTSIDE_WORKSPACE
 
@@ -161,7 +184,7 @@ class OperationTimeoutError(SphereLoomError):
 
 
 class RateLimitedError(SphereLoomError):
-    """An internal rate limit rejected the call."""
+    """Requests are arriving too fast: the camera answered HTTP 429, or a limit refused it."""
 
     code = ErrorCode.RATE_LIMITED
     default_retryable = True
@@ -173,6 +196,16 @@ class StorageFullError(SphereLoomError):
     code = ErrorCode.STORAGE_FULL
 
 
+class StorageUnavailableError(SphereLoomError):
+    """The camera has no usable storage: no card is inserted, or it cannot read the card.
+
+    Distinct from `StorageFullError` because the remedy is different. Telling a user with
+    no card to free some space sends them looking for a problem they do not have.
+    """
+
+    code = ErrorCode.STORAGE_UNAVAILABLE
+
+
 class JobFailedError(SphereLoomError):
     """Background work finished in a failed state."""
 
@@ -180,7 +213,12 @@ class JobFailedError(SphereLoomError):
 
 
 class InternalError(SphereLoomError):
-    """An unexpected condition. Anything that reaches a user here is a defect."""
+    """Something SphereLoom could not use or did not expect.
+
+    The camera's answer was unusable -- malformed or unrecognised vendor data, an unexpected
+    HTTP status, an oversized response, a file URL that is unparseable or points off the
+    camera -- or SphereLoom itself is in a state it should never reach, which is a defect.
+    """
 
     code = ErrorCode.INTERNAL
 
@@ -201,6 +239,7 @@ ERROR_CLASSES: dict[ErrorCode, type[SphereLoomError]] = {
     ErrorCode.TIMEOUT: OperationTimeoutError,
     ErrorCode.RATE_LIMITED: RateLimitedError,
     ErrorCode.STORAGE_FULL: StorageFullError,
+    ErrorCode.STORAGE_UNAVAILABLE: StorageUnavailableError,
     ErrorCode.JOB_FAILED: JobFailedError,
     ErrorCode.INTERNAL: InternalError,
 }

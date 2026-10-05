@@ -45,6 +45,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Vendor error mapping (`sphereloom.adapters.osc.errors`) translating Insta360 error codes
   into the SphereLoom taxonomy, preserving the original payload for diagnosis and keeping
   actionable vendor wording. Unrecognised codes become `internal` rather than a guess.
+- `storage_unavailable` error code, for a camera with no card or a card it cannot read.
+  The vendor reports this as `cardNotFound`, which has no space to free, so it is kept
+  apart from `storage_full` to point the user at the right remedy.
 - Fake camera backend (`sphereloom.adapters.fake`) serving the OSC protocol over real HTTP
   on loopback. It runs the whole test suite without hardware and doubles as a demo backend,
   so SphereLoom can be tried with no camera at all. Includes failure injection for a busy

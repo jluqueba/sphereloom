@@ -19,6 +19,7 @@ from sphereloom.domain.errors import (
     NotFoundError,
     SphereLoomError,
     StorageFullError,
+    StorageUnavailableError,
 )
 from sphereloom.domain.payloads import bounded_payload, bounded_text
 
@@ -33,7 +34,7 @@ _VENDOR_CODES: dict[str, type[SphereLoomError]] = {
     "invalidParameterValue": InvalidArgumentError,
     "missingParameter": InvalidArgumentError,
     "noFreeSpace": StorageFullError,
-    "cardNotFound": StorageFullError,
+    "cardNotFound": StorageUnavailableError,
     "fileNotFound": NotFoundError,
     "unexpected": InternalError,
     "powerOffSequenceRunning": CameraBusyError,

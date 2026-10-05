@@ -35,6 +35,7 @@ from sphereloom.domain.errors import (
     NotConnectedError,
     NotFoundError,
     OperationTimeoutError,
+    RateLimitedError,
     SphereLoomError,
     StorageFullError,
 )
@@ -413,11 +414,12 @@ async def test_a_file_url_pointing_off_camera_is_refused(client: OscHttpClient) 
     A malformed or hostile payload must not make SphereLoom fetch an arbitrary host, with
     this client's headers attached, on behalf of a camera.
     """
-    with pytest.raises(InvalidArgumentError) as caught:
+    with pytest.raises(InternalError) as caught:
         async with client.stream("http://example.invalid/DCIM/Camera01/IMG_0001.jpg"):
             pass  # pragma: no cover - the context manager raises on entry
 
     assert caught.value.details["received_host"] == "example.invalid"
+    assert caught.value.retryable is False
 
 
 @pytest.mark.parametrize(
@@ -431,7 +433,7 @@ async def test_a_file_url_pointing_off_camera_is_refused(client: OscHttpClient) 
 async def test_off_origin_urls_are_refused_whatever_shape_they_take(
     client: OscHttpClient, hostile: str
 ) -> None:
-    with pytest.raises(InvalidArgumentError):
+    with pytest.raises(InternalError):
         async with client.stream(hostile):
             pass  # pragma: no cover - the context manager raises on entry
 
@@ -583,6 +585,8 @@ async def test_a_redirect_in_the_json_path_is_not_accepted_as_a_result() -> None
             await http.aclose()
 
     assert caught.value.details["status_code"] == 302
+    # A redirect comes back the same way every time, so retrying it cannot help.
+    assert caught.value.retryable is False
 
 
 async def test_a_server_error_after_an_unsafe_command_is_not_retryable() -> None:
@@ -1051,20 +1055,67 @@ async def test_a_redirect_is_not_served_as_file_content() -> None:
     with run_fake_camera(camera) as base_url:
         http = OscHttpClient(base_url)
         try:
-            with pytest.raises(NotConnectedError) as caught:
+            with pytest.raises(InternalError) as caught:
                 async with http.stream("/DCIM/Camera01/redirect-me.jpg"):
                     pass  # pragma: no cover - the context manager raises on entry
         finally:
             await http.aclose()
 
     assert caught.value.details["status_code"] == 302
+    assert caught.value.retryable is False
 
 
-async def test_a_malformed_file_url_is_reported_not_crashed(client: OscHttpClient) -> None:
-    """The URL came from a device response, so a malformed one is a camera problem."""
-    with pytest.raises(InvalidArgumentError):
-        async with client.stream("http://[not-a-valid-host/file.jpg"):
+async def test_a_rate_limited_download_reads_like_a_rate_limited_command() -> None:
+    """A 429 is the camera saying "slow down", wherever it says it.
+
+    Falling through to the catch-all reported it as a non-retryable internal defect.
+    """
+    transport = httpx.MockTransport(lambda request: httpx.Response(429))
+    http = OscHttpClient("http://192.168.42.1", transport=transport)
+    try:
+        with pytest.raises(RateLimitedError) as caught:
+            async with http.stream("/DCIM/Camera01/IMG_0001.jpg"):
+                pass  # pragma: no cover - the context manager raises on entry
+    finally:
+        await http.aclose()
+
+    assert caught.value.retryable is True
+
+
+async def test_a_server_error_during_a_download_reads_like_one_during_a_command() -> None:
+    """A 5xx is a camera that is restarting or overloaded, wherever it happens.
+
+    A download is a GET, so unlike a state-changing command it is always safe to repeat.
+    """
+    path = "/DCIM/Camera01/IMG_20260115_103000_00_001.jpg"
+    camera = FakeCamera(scenario=scenarios.Scenario(failing_paths=frozenset({path})))
+    with run_fake_camera(camera) as base_url:
+        http = OscHttpClient(base_url)
+        try:
+            with pytest.raises(NotConnectedError) as caught:
+                async with http.stream(path):
+                    pass  # pragma: no cover - the context manager raises on entry
+        finally:
+            await http.aclose()
+
+    assert caught.value.details["status_code"] == 503
+    assert caught.value.retryable is True
+
+
+@pytest.mark.parametrize("malformed", ["http://[::1/file.jpg", "http://\x00/file.jpg"])
+async def test_a_malformed_file_url_is_reported_not_crashed(
+    client: OscHttpClient, malformed: str
+) -> None:
+    """The URL came from a device response, so a malformed one is malformed vendor data.
+
+    Both inputs make `httpx.URL` raise, so they reach the parse branch rather than the
+    off-origin check, which would also raise `InternalError` and hide a gap here.
+    """
+    with pytest.raises(InternalError) as caught:
+        async with client.stream(malformed):
             pass  # pragma: no cover - the context manager raises on entry
+
+    assert "received_host" not in caught.value.details
 
 
 @pytest.mark.parametrize("value", [["a"], {"a": 1}, 5, None, True])
@@ -1075,7 +1126,7 @@ async def test_a_non_string_file_url_is_mapped_to_the_taxonomy(value: Any) -> No
     """
     http = OscHttpClient("http://192.168.42.1")
     try:
-        with pytest.raises(InvalidArgumentError):
+        with pytest.raises(InternalError):
             http._validated_url(value)
     finally:
         await http.aclose()

@@ -40,7 +40,6 @@ from sphereloom import __version__
 from sphereloom.domain.clock import Monotonic, SystemMonotonic
 from sphereloom.domain.errors import (
     InternalError,
-    InvalidArgumentError,
     NotConnectedError,
     NotFoundError,
     OperationTimeoutError,
@@ -313,11 +312,27 @@ class OscHttpClient:
                     "current file URLs.",
                     backend=BACKEND,
                 )
-            if not response.is_success:
-                # Anything outside 2xx, redirects included. Redirects are deliberately not
-                # followed, so a 3xx body is not file content; persisting it would write a
-                # redirect page to disk under a media filename.
+            if response.status_code == 429:
+                raise RateLimitedError(
+                    "The camera is rejecting requests as too frequent. Slow down and retry.",
+                    backend=BACKEND,
+                )
+            if response.status_code >= 500:
+                # The same reading as a command: a server error while the camera restarts
+                # or is overloaded. A download is a GET, so repeating it is always safe.
                 raise NotConnectedError(
+                    f"The camera returned HTTP {response.status_code} for the download. It "
+                    "may be restarting or busy.",
+                    backend=BACKEND,
+                    details={"status_code": response.status_code},
+                    retryable=True,
+                )
+            if not response.is_success:
+                # Any other status outside 2xx, redirects included, is neither file content
+                # nor a usable vendor answer. Redirects are deliberately not followed, so
+                # persisting a 3xx body would write a redirect page to disk under a media
+                # filename. Not retryable: a redirect comes back the same way every time.
+                raise InternalError(
                     f"The camera answered the download with HTTP {response.status_code} "
                     "instead of file content.",
                     backend=BACKEND,
@@ -352,12 +367,12 @@ class OscHttpClient:
         try:
             candidate = httpx.URL(url)
         except (httpx.InvalidURL, ValueError, TypeError) as exc:
-            # The URL came from a device response, so a malformed one is a camera problem,
-            # not a programming error. It gets a taxonomy answer like everything else.
+            # The URL came from a device response, so a malformed one is malformed vendor
+            # data -- `internal` in the taxonomy -- not a problem with the caller's request.
             # TypeError is included because a payload can supply a list, an object, a
             # number or null where a string belongs, and `httpx.URL` raises that rather
             # than ValueError for a non-string.
-            raise InvalidArgumentError(
+            raise InternalError(
                 "The camera supplied a file URL that could not be parsed.",
                 backend=BACKEND,
             ) from exc
@@ -372,7 +387,7 @@ class OscHttpClient:
             and candidate.port == base.port
         )
         if not same_origin:
-            raise InvalidArgumentError(
+            raise InternalError(
                 "The camera supplied a file URL pointing somewhere other than the camera "
                 "itself. SphereLoom refuses to follow it.",
                 backend=BACKEND,
@@ -543,13 +558,13 @@ class OscHttpClient:
         # taxonomy with far better messages than a status code alone. Anything else outside
         # 2xx is not a vendor answer at all: redirects are not followed, so a 3xx body is
         # not an OSC response, and accepting it would treat a redirect page as a result.
+        # Not retryable, for any command: a redirect comes back the same way every time.
         if not response.is_success and response.status_code < 400:
             raise InternalError(
                 f"The camera answered HTTP {response.status_code} instead of a result. "
                 "Redirects are not followed, so this is not a response SphereLoom can use.",
                 backend=BACKEND,
                 details={"status_code": response.status_code, "command": command},
-                retryable=_is_safe_to_repeat(command),
             )
 
         try:
