@@ -63,6 +63,23 @@ def _bounded(text: str, limit: int) -> str:
     return collapsed if len(collapsed) <= limit else collapsed[:limit] + "…"
 
 
+def _bounded_field(value: Any, limit: int) -> str:
+    """Render a vendor-supplied scalar within a bound, without materialising it first.
+
+    Calling `str()` on an arbitrary payload allocates the whole structure before anything
+    is truncated, so firmware returning a large list or object as `code` would still cause
+    an unbounded allocation. Only strings and small scalars are accepted; anything else is
+    reported as malformed rather than rendered.
+    """
+    if isinstance(value, str):
+        return _bounded(value, limit)
+    if isinstance(value, bool | int | float):
+        return _bounded(str(value), limit)
+    if value is None:
+        return ""
+    return "[malformed]"
+
+
 def map_vendor_error(
     payload: Any,
     *,
@@ -82,8 +99,8 @@ def map_vendor_error(
             details=_details(payload, command),
         )
 
-    code = _bounded(str(error.get("code", "")), _CODE_LIMIT)
-    message = _bounded(str(error.get("message", "")), _MESSAGE_LIMIT)
+    code = _bounded_field(error.get("code"), _CODE_LIMIT)
+    message = _bounded_field(error.get("message"), _MESSAGE_LIMIT)
 
     if code in _OWNER_ACTION_CODES:
         return InvalidArgumentError(

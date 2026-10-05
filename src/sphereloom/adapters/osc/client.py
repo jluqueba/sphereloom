@@ -92,6 +92,16 @@ class CachedInfo:
     age_seconds: float
 
 
+def _is_safe_to_repeat(command: str | None) -> bool:
+    """Whether an agent may repeat this call without risking a duplicate side effect.
+
+    A read has no side effect, so repeating it is harmless. Anything that captures, changes
+    a setting or deletes may already have taken effect, so reporting it as retryable would
+    invite the duplicate the retry policy exists to prevent.
+    """
+    return command is None or command in RETRY_SAFE_COMMANDS
+
+
 class OscHttpClient:
     """Transport for the OSC protocol.
 
@@ -415,7 +425,7 @@ class OscHttpClient:
                 # a listing is harmless, repeating a capture or a delete is not. Saying
                 # "retryable" for the unsafe case would cause exactly the duplicate side
                 # effect this policy exists to prevent, only one layer further out.
-                safe_to_repeat = command is None or command in RETRY_SAFE_COMMANDS
+                safe_to_repeat = _is_safe_to_repeat(command)
                 raise OperationTimeoutError(
                     f"The camera did not respond within the timeout while calling "
                     f"{command or path}. The request was already sent, so it may still be "
@@ -426,13 +436,12 @@ class OscHttpClient:
                 ) from exc
             except httpx.HTTPError as exc:
                 # Also post-send and therefore ambiguous.
-                safe_to_repeat = command is None or command in RETRY_SAFE_COMMANDS
                 raise NotConnectedError(
                     "Lost contact with the camera after the request was sent. It may still "
                     "have been acted on, so SphereLoom will not repeat it automatically.",
                     backend=BACKEND,
                     details={"command": command},
-                    retryable=safe_to_repeat,
+                    retryable=_is_safe_to_repeat(command),
                 ) from exc
             else:
                 if response.status_code in _RETRYABLE_STATUS and attempt < attempts:
@@ -465,6 +474,22 @@ class OscHttpClient:
                 f"{command or response.request.url.path}. It may be restarting or busy.",
                 backend=BACKEND,
                 details={"status_code": response.status_code},
+                # A 5xx does not prove the camera did nothing before failing, so a
+                # state-changing command must not be advertised as safe to repeat.
+                retryable=_is_safe_to_repeat(command),
+            )
+
+        # 4xx carries the vendor's own error envelope, which the caller maps to the
+        # taxonomy with far better messages than a status code alone. Anything else outside
+        # 2xx is not a vendor answer at all: redirects are not followed, so a 3xx body is
+        # not an OSC response, and accepting it would treat a redirect page as a result.
+        if not response.is_success and response.status_code < 400:
+            raise InternalError(
+                f"The camera answered HTTP {response.status_code} instead of a result. "
+                "Redirects are not followed, so this is not a response SphereLoom can use.",
+                backend=BACKEND,
+                details={"status_code": response.status_code, "command": command},
+                retryable=_is_safe_to_repeat(command),
             )
 
         try:
@@ -473,10 +498,10 @@ class OscHttpClient:
             # Some firmware returns malformed JSON under load. Treating it as a crash would
             # be unhelpful; reporting it with a bounded excerpt is diagnosable.
             raise InternalError(
-                "The camera returned a response that is not valid JSON. This has been seen "
-                "on some firmware revisions under load; retrying usually succeeds.",
+                _malformed_message(command),
                 backend=BACKEND,
                 details={"excerpt": response.text[:200], "command": command},
+                retryable=_is_safe_to_repeat(command),
             ) from exc
 
         if not isinstance(payload, dict):
@@ -484,6 +509,25 @@ class OscHttpClient:
                 "The camera returned a JSON value where an object was expected.",
                 backend=BACKEND,
                 details={"excerpt": str(payload)[:200], "command": command},
+                retryable=_is_safe_to_repeat(command),
             )
 
         return payload
+
+
+def _malformed_message(command: str | None) -> str:
+    """Describe a malformed response, without recommending a retry that may duplicate.
+
+    Malformed JSON after a capture leaves the outcome unknown: the camera may have acted.
+    Telling the caller "retrying usually succeeds" would be advice to duplicate it.
+    """
+    base = (
+        "The camera returned a response that is not valid JSON. This has been seen on some "
+        "firmware revisions under load"
+    )
+    if _is_safe_to_repeat(command):
+        return f"{base}; retrying usually succeeds."
+    return (
+        f"{base}. Because {command} may already have taken effect, check the camera state "
+        "before deciding whether to repeat it."
+    )

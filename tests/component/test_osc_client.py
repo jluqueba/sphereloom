@@ -13,6 +13,7 @@ import contextlib
 import time
 from collections.abc import AsyncIterator
 
+import httpx
 import pytest
 
 from sphereloom.adapters.fake import scenarios
@@ -535,6 +536,104 @@ async def test_a_timeout_after_acceptance_is_not_advertised_as_retryable() -> No
 
     assert caught.value.retryable is False
     assert caught.value.details["command_id"]
+
+
+async def test_a_redirect_in_the_json_path_is_not_accepted_as_a_result(
+    client: OscHttpClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Redirects are not followed, so a 3xx body is not an OSC response.
+
+    Accepting it would treat a redirect page as a command result. The same rule already
+    guarded downloads; it was missing here, which is the same defect in a second place.
+    """
+    original = client._client.request
+
+    async def redirecting(*args: object, **kwargs: object) -> httpx.Response:
+        response = await original(*args, **kwargs)  # type: ignore[arg-type]
+        return httpx.Response(302, json={"name": "camera.getOptions"}, request=response.request)
+
+    monkeypatch.setattr(client._client, "request", redirecting)
+
+    with pytest.raises(InternalError) as caught:
+        await client.state()
+
+    assert caught.value.details["status_code"] == 302
+
+
+async def test_a_server_error_after_an_unsafe_command_is_not_retryable() -> None:
+    """A 5xx does not prove the camera did nothing before failing."""
+    camera = FakeCamera(scenario=scenarios.SERVER_ERROR)
+    with run_fake_camera(camera) as base_url:
+        http = OscHttpClient(base_url)
+        try:
+            with pytest.raises(NotConnectedError) as caught:
+                await http.execute("camera.takePicture")
+        finally:
+            await http.aclose()
+
+    assert caught.value.retryable is False
+
+
+async def test_malformed_json_after_an_unsafe_command_does_not_recommend_retrying() -> None:
+    """Advising a retry after a capture of unknown outcome is advice to duplicate it."""
+    camera = FakeCamera(scenario=scenarios.MALFORMED_JSON)
+    with run_fake_camera(camera) as base_url:
+        http = OscHttpClient(base_url)
+        try:
+            with pytest.raises(InternalError) as caught:
+                await http.execute("camera.takePicture")
+        finally:
+            await http.aclose()
+
+    assert caught.value.retryable is False
+    assert "retrying usually succeeds" not in caught.value.message
+
+
+async def test_malformed_json_after_a_safe_command_still_recommends_retrying() -> None:
+    camera = FakeCamera(scenario=scenarios.MALFORMED_JSON)
+    with run_fake_camera(camera) as base_url:
+        http = OscHttpClient(base_url)
+        try:
+            with pytest.raises(InternalError) as caught:
+                await http.execute("camera.listFiles")
+        finally:
+            await http.aclose()
+
+    assert caught.value.retryable is True
+
+
+# ---------------------------------------------------------------- untrusted identifiers
+
+
+@pytest.mark.parametrize(
+    "identifier",
+    [["a", "list"], {"an": "object"}, 12345, "", "   ", "x" * 500],
+)
+async def test_an_unusable_command_id_is_reported_as_malformed(
+    client: OscHttpClient, monkeypatch: pytest.MonkeyPatch, identifier: object
+) -> None:
+    """The id comes from a device response and is copied into every poll and message.
+
+    A list would be stringified into its repr; an unbounded string would be carried
+    everywhere unchecked.
+    """
+
+    async def acknowledged(*args: object, **kwargs: object) -> dict[str, object]:
+        return {"name": "camera.takePicture", "state": "inProgress", "id": identifier}
+
+    monkeypatch.setattr(client, "execute", acknowledged)
+    runner = CommandRunner(client)
+
+    with pytest.raises(InternalError):
+        await runner.run("camera.takePicture")
+
+
+async def test_a_normal_command_id_is_accepted(runner: CommandRunner) -> None:
+    """Being strict must not reject what real firmware actually sends."""
+    result = await runner.run("camera.takePicture")
+
+    assert result.command_id is not None
+    assert result.command_id.isdigit()
 
 
 async def test_a_read_timeout_is_not_retried_even_for_a_safe_command() -> None:

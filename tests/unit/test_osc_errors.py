@@ -192,6 +192,37 @@ def test_a_broad_and_deep_payload_is_bounded_by_total_size() -> None:
     assert len(rendered) < 10_000
 
 
+def test_a_non_string_vendor_field_is_not_materialised() -> None:
+    """Calling str() on an arbitrary payload allocates it all before truncating.
+
+    Firmware returning a large list as `code` would otherwise defeat the bound entirely.
+    """
+    payload = {
+        "name": "camera.takePicture",
+        "state": "error",
+        "error": {"code": ["x" * 1000] * 1000, "message": {"nested": "y" * 5000}},
+    }
+
+    mapped = map_vendor_error(payload)
+
+    assert len(mapped.message) < 1000
+    assert "malformed" in mapped.message
+
+
+@pytest.mark.parametrize("value", [["a", "b"], {"k": "v"}, object()])
+def test_a_structured_vendor_code_is_reported_as_malformed(value: object) -> None:
+    mapped = map_vendor_error({"state": "error", "error": {"code": value, "message": "something"}})
+
+    assert isinstance(mapped, InternalError)
+
+
+def test_a_numeric_vendor_field_is_still_rendered() -> None:
+    """Being strict must not discard a value that is merely the wrong scalar type."""
+    mapped = map_vendor_error({"state": "error", "error": {"code": "noFreeSpace", "message": 42}})
+
+    assert "42" in (mapped.reason or "")
+
+
 def test_every_mapped_error_carries_the_backend() -> None:
     """Results and errors name the backend so an agent can explain which path failed."""
     for code in ("disabledCommand", "noFreeSpace", "unknownToUs"):

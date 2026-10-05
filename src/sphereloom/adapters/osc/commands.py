@@ -35,6 +35,10 @@ STATE_DONE = "done"
 STATE_ERROR = "error"
 STATE_IN_PROGRESS = "inProgress"
 
+#: Vendor identifiers are short strings such as "001996". A bound keeps an untrusted value
+#: from being carried into every poll request, message and error detail unchecked.
+COMMAND_ID_MAX_LENGTH = 128
+
 
 @dataclass(frozen=True, slots=True)
 class CommandResult:
@@ -92,12 +96,12 @@ class CommandRunner:
             raise map_vendor_error(payload, command=name)
 
         if state == STATE_IN_PROGRESS:
-            command_id = payload.get("id")
-            if not command_id:
-                # Without an identifier there is nothing to poll. Reporting this is better
-                # than returning an acknowledgement as though it were a result.
+            command_id = _validated_command_id(payload.get("id"))
+            if command_id is None:
+                # Without a usable identifier there is nothing to poll. Reporting this is
+                # better than returning an acknowledgement as though it were a result.
                 raise map_vendor_error(payload, command=name)
-            return await self._await_completion(name, str(command_id), deadline_seconds=deadline)
+            return await self._await_completion(name, command_id, deadline_seconds=deadline)
 
         if state == STATE_DONE:
             return CommandResult(name=name, results=_results(payload))
@@ -178,6 +182,21 @@ class CommandRunner:
                     }
                 },
             )
+
+
+def _validated_command_id(value: Any) -> str | None:
+    """Accept a command identifier only if it is a usable, bounded string.
+
+    The identifier comes from a device response and is copied into poll requests, timeout
+    messages and error details. A list or object would be stringified into its repr, and an
+    arbitrarily long string would be carried into every message unbounded.
+    """
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate or len(candidate) > COMMAND_ID_MAX_LENGTH:
+        return None
+    return candidate
 
 
 def _format_seconds(value: float) -> str:
