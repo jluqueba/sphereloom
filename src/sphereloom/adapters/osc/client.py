@@ -32,6 +32,7 @@ from sphereloom.domain.errors import (
     InternalError,
     InvalidArgumentError,
     NotConnectedError,
+    NotFoundError,
     OperationTimeoutError,
     RateLimitedError,
 )
@@ -237,15 +238,59 @@ class OscHttpClient:
         following it would send this client's requests, and its headers, to a host the
         operator never chose.
 
+        Every transport failure is mapped to the taxonomy, including ones raised while the
+        caller iterates the body: a dropped transfer half way through a download is the
+        normal case on a weak access point, and a consumer should not have to catch
+        third-party exception types to handle it.
+
         Separate from the JSON path because media files are routinely gigabytes: they are
         never buffered, parsed, or logged.
         """
         target = self._validated_url(url)
-        request = self._client.build_request("GET", target)
-        response = await self._client.send(request, stream=True)
+
         try:
-            response.raise_for_status()
+            request = self._client.build_request("GET", target)
+            response = await self._client.send(request, stream=True)
+        except httpx.TimeoutException as exc:
+            raise OperationTimeoutError(
+                "The camera did not start sending the file within the timeout.",
+                backend=BACKEND,
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise NotConnectedError(
+                "Lost contact with the camera while starting a download. Check that this "
+                "machine is still on the camera's Wi-Fi access point.",
+                backend=BACKEND,
+            ) from exc
+
+        try:
+            if response.status_code == 404:
+                raise NotFoundError(
+                    "The camera no longer has that file. List the gallery again to get "
+                    "current file URLs.",
+                    backend=BACKEND,
+                )
+            if response.status_code >= 400:
+                raise NotConnectedError(
+                    f"The camera refused the download with HTTP {response.status_code}.",
+                    backend=BACKEND,
+                    details={"status_code": response.status_code},
+                )
+
+            # An exception raised while the caller iterates the body is thrown back in at
+            # this yield, so it is mapped here too rather than escaping as an httpx type.
             yield response
+        except httpx.TimeoutException as exc:
+            raise OperationTimeoutError(
+                "The download stalled and timed out before it finished.",
+                backend=BACKEND,
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise NotConnectedError(
+                "The download was interrupted before it finished. The partial file has "
+                "been discarded; retrying is safe.",
+                backend=BACKEND,
+            ) from exc
         finally:
             await response.aclose()
 

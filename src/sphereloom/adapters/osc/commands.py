@@ -12,6 +12,7 @@ the deadline and the error mapping are decided once.
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -112,21 +113,43 @@ class CommandRunner:
         started = self._monotonic.elapsed()
         interval = POLL_INITIAL_SECONDS
 
-        while True:
-            elapsed = self._monotonic.elapsed() - started
-            if elapsed >= deadline_seconds:
-                raise OperationTimeoutError(
-                    f"{name} did not report completion within {deadline_seconds:.0f} seconds. "
-                    f"The camera may still be writing the file. Its command id is "
-                    f"{command_id}, which you can poll directly if needed.",
-                    backend=BACKEND,
-                    details={"command": name, "command_id": command_id},
-                )
+        def remaining() -> float:
+            return deadline_seconds - (self._monotonic.elapsed() - started)
 
-            await asyncio.sleep(min(interval, max(deadline_seconds - elapsed, 0.0)))
+        def expired() -> OperationTimeoutError:
+            return OperationTimeoutError(
+                f"{name} did not report completion within {deadline_seconds:.0f} seconds. "
+                f"The camera may still be writing the file. Its command id is "
+                f"{command_id}, which you can poll directly if needed.",
+                backend=BACKEND,
+                details={"command": name, "command_id": command_id},
+            )
+
+        while True:
+            if remaining() <= 0:
+                raise expired()
+
+            await asyncio.sleep(min(interval, max(remaining(), 0.0)))
             interval = min(interval * POLL_BACKOFF_FACTOR, POLL_MAX_SECONDS)
 
-            payload = await self._client.command_status(command_id)
+            budget = remaining()
+            if budget <= 0:
+                raise expired()
+
+            try:
+                # Bounded by what is left of the deadline. Without this the poll could
+                # consume its own full HTTP timeout on top of an already exhausted budget.
+                payload = await asyncio.wait_for(
+                    self._client.command_status(command_id), timeout=budget
+                )
+            except TimeoutError as exc:
+                raise expired() from exc
+
+            # Rechecked after the response: a poll that answered `done` just past the
+            # deadline would otherwise be accepted, making the deadline advisory.
+            if remaining() <= 0:
+                raise expired()
+
             state = payload.get("state")
 
             if state == STATE_ERROR or "error" in payload:
@@ -152,7 +175,15 @@ class CommandRunner:
 
 
 def _validated_deadline(seconds: float) -> float:
-    """Reject a deadline that cannot mean what the caller intended."""
+    """Reject a deadline that cannot mean what the caller intended.
+
+    Non-finite values are refused explicitly: NaN defeats every elapsed-time comparison and
+    would reach `asyncio.sleep`, while infinity silently removes the deadline this class
+    exists to enforce.
+    """
+    if not math.isfinite(seconds):
+        message = f"A command deadline must be a finite number of seconds, got {seconds!r}."
+        raise InvalidArgumentError(message, backend=BACKEND)
     if seconds < 0:
         message = f"A command deadline cannot be negative, got {seconds!r}."
         raise InvalidArgumentError(message, backend=BACKEND)

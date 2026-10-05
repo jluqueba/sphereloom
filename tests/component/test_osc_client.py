@@ -29,6 +29,7 @@ from sphereloom.domain.errors import (
     InternalError,
     InvalidArgumentError,
     NotConnectedError,
+    NotFoundError,
     OperationTimeoutError,
     StorageFullError,
 )
@@ -194,18 +195,25 @@ async def test_commands_are_serialised(camera: FakeCamera, client: OscHttpClient
     assert camera.concurrent_command_detected is False
 
 
-async def test_status_polling_does_not_hold_the_command_lock(
-    camera: FakeCamera, client: OscHttpClient
-) -> None:
+async def test_status_polling_does_not_hold_the_command_lock() -> None:
     """Holding the lock while awaiting a capture would stall every other call for its
-    duration, which would make a status check impossible exactly when it is most wanted."""
+    duration, making a status check impossible exactly when it is most wanted.
+
+    Synchronised on the camera's own signal rather than a sleep: a fixed delay would let
+    this pass under favourable scheduling even if polling did hold the lock.
+    """
     slow = FakeCamera(capture_polls=4)
     with run_fake_camera(slow) as base_url:
         http = OscHttpClient(base_url)
         runner = CommandRunner(http, default_deadline=10.0)
         try:
             capture = asyncio.create_task(runner.run("camera.takePicture"))
-            await asyncio.sleep(0.05)
+
+            accepted = await asyncio.get_running_loop().run_in_executor(
+                None, slow.capture_accepted.wait, 5.0
+            )
+            assert accepted, "the capture was never accepted by the camera"
+
             # This would block until the capture finished if the lock were held.
             options = await asyncio.wait_for(http.execute("camera.getOptions"), timeout=5.0)
             await capture
@@ -524,3 +532,81 @@ async def test_a_negative_deadline_is_rejected(client: OscHttpClient) -> None:
 
     with pytest.raises(InvalidArgumentError):
         await runner.run("camera.takePicture", deadline_seconds=-1)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+async def test_a_non_finite_deadline_is_rejected(client: OscHttpClient, value: float) -> None:
+    """NaN defeats every elapsed-time comparison; infinity silently removes the deadline."""
+    runner = CommandRunner(client)
+
+    with pytest.raises(InvalidArgumentError):
+        await runner.run("camera.takePicture", deadline_seconds=value)
+
+
+async def test_a_deadline_is_not_exceeded_by_a_slow_poll() -> None:
+    """Checking the deadline only before sleeping makes it advisory.
+
+    A poll can consume its own HTTP timeout on top of an exhausted budget, so the deadline
+    is bounded around the poll and rechecked after it.
+    """
+    stuck = FakeCamera(capture_polls=10_000, scenario=scenarios.Scenario(latency_seconds=0.4))
+    with run_fake_camera(stuck) as base_url:
+        http = OscHttpClient(base_url)
+        runner = CommandRunner(http)
+        started = time.monotonic()
+        try:
+            with pytest.raises(OperationTimeoutError):
+                await runner.run("camera.takePicture", deadline_seconds=0.5)
+            elapsed = time.monotonic() - started
+        finally:
+            await http.aclose()
+
+    assert elapsed < 2.0, f"the deadline was exceeded by {elapsed - 0.5:.1f}s"
+
+
+# ---------------------------------------------------------------- streaming failures
+
+
+async def test_a_missing_file_is_reported_as_not_found(client: OscHttpClient) -> None:
+    """A consumer must not have to catch httpx types to handle a deleted file."""
+    with pytest.raises(NotFoundError):
+        async with client.stream("/DCIM/Camera01/IMG_does_not_exist.jpg"):
+            pass  # pragma: no cover - the context manager raises on entry
+
+
+async def test_an_interrupted_download_maps_to_the_taxonomy() -> None:
+    """A dropped transfer is the normal case on a weak access point.
+
+    The failure surfaces while the caller iterates the body, which is exactly the path that
+    previously leaked a raw httpx exception.
+    """
+    camera = FakeCamera(scenario=scenarios.DROPPED_DOWNLOAD)
+    with run_fake_camera(camera) as base_url:
+        http = OscHttpClient(base_url)
+        try:
+            listing = await http.execute("camera.listFiles", {"fileType": "image", "entryCount": 1})
+            path = listing["results"]["entries"][0]["_localFileUrl"]
+
+            async def read_everything() -> None:
+                async with http.stream(path) as response:
+                    async for _ in response.aiter_bytes():
+                        pass
+
+            with pytest.raises(NotConnectedError) as caught:
+                await read_everything()
+        finally:
+            await http.aclose()
+
+    assert "interrupted" in caught.value.message.lower()
+
+
+async def test_a_stalled_download_maps_to_the_timeout_taxonomy() -> None:
+    camera = FakeCamera(scenario=scenarios.Scenario(latency_seconds=2.0))
+    with run_fake_camera(camera) as base_url:
+        http = OscHttpClient(base_url, read_timeout=0.2)
+        try:
+            with pytest.raises(OperationTimeoutError):
+                async with http.stream("/DCIM/Camera01/IMG_20260115_103000_00_001.jpg"):
+                    pass  # pragma: no cover - the context manager raises on entry
+        finally:
+            await http.aclose()

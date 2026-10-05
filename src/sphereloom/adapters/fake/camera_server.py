@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import threading
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -219,6 +220,11 @@ class FakeCamera:
         self.request_log: list[str] = []
         #: Set when a second command arrives while one is still executing.
         self.concurrent_command_detected = False
+        #: Signalled once a capture has been accepted. A test that needs to act *while* a
+        #: capture is running can wait on this instead of guessing with a sleep, which
+        #: would pass under favourable scheduling even if the behaviour were wrong.
+        #: threading rather than asyncio, because the server runs in its own event loop.
+        self.capture_accepted = threading.Event()
 
     # ------------------------------------------------------------------ helpers
 
@@ -624,6 +630,7 @@ class FakeCamera:
                 "_localFileGroup": [captured.local_url],
             },
         )
+        self.capture_accepted.set()
         return JSONResponse(
             {
                 "name": "camera.takePicture",

@@ -23,8 +23,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   shot or a repeated delete is worse than a clear error.
 - Command runner (`sphereloom.adapters.osc.commands`) that waits for asynchronous commands
   to actually finish. A capture acknowledgement is not a result, and returning early would
-  hand back a photo that does not exist yet. On timeout the vendor command identifier is
-  reported, since the camera may still be writing the file.
+  hand back a photo that does not exist yet. The deadline bounds the poll itself and is
+  rechecked after each response, so it is a limit rather than a suggestion. On timeout the
+  vendor command identifier is reported, since the camera may still be writing the file.
+- Streaming downloads map every transport failure to the SphereLoom taxonomy, including
+  failures raised while the caller reads the body. A dropped transfer is the normal case on
+  a weak access point, and a consumer should not have to catch third-party exception types
+  to handle it.
 - Vendor error mapping (`sphereloom.adapters.osc.errors`) translating Insta360 error codes
   into the SphereLoom taxonomy, preserving the original payload for diagnosis and keeping
   actionable vendor wording. Unrecognised codes become `internal` rather than a guess.
