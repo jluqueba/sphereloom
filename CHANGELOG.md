@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- OSC HTTP client (`sphereloom.adapters.osc.client`) enforcing the three protocol
+  constraints Insta360 documents: the required `X-XSRF-Protected` header on every request,
+  one command in flight at a time, and `/osc/info` polled no more than once per second with
+  the age of cached readings reported to callers. Retries are limited to requests that are
+  safe to repeat; captures, setting changes and deletions never retry, because a duplicated
+  shot or a repeated delete is worse than a clear error.
+- Command runner (`sphereloom.adapters.osc.commands`) that waits for asynchronous commands
+  to actually finish. A capture acknowledgement is not a result, and returning early would
+  hand back a photo that does not exist yet. On timeout the vendor command identifier is
+  reported, since the camera may still be writing the file.
+- Vendor error mapping (`sphereloom.adapters.osc.errors`) translating Insta360 error codes
+  into the SphereLoom taxonomy, preserving the original payload for diagnosis and keeping
+  actionable vendor wording. Unrecognised codes become `internal` rather than a guess.
 - Fake camera backend (`sphereloom.adapters.fake`) serving the OSC protocol over real HTTP
   on loopback. It runs the whole test suite without hardware and doubles as a demo backend,
   so SphereLoom can be tried with no camera at all. Includes failure injection for a busy
