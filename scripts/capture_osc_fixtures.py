@@ -67,6 +67,9 @@ CAPTURE_DEADLINE_SECONDS = 60.0
 HEADERS = {
     "Content-Type": "application/json;charset=utf-8",
     "Accept": "application/json",
+    # Uncompressed bodies only: httpx decompresses before yielding a chunk, so a small
+    # compressed body could expand past the size bound before it was measured.
+    "Accept-Encoding": "identity",
     "X-XSRF-Protected": "1",
 }
 
@@ -255,9 +258,21 @@ def _request_json(client: httpx.Client, method: str, url: str, **kwargs: Any) ->
             # closes the connection.
             response.raise_for_status()
 
+        encoding = response.headers.get("content-encoding", "").strip().lower()
+        if encoding not in {"", "identity"}:
+            message = (
+                "The camera sent a compressed response although an uncompressed one was "
+                "requested. It is refused rather than decompressed into memory."
+            )
+            raise CaptureError(message)
+
         chunks: list[bytes] = []
         total = 0
-        for chunk in response.iter_bytes():
+        # Raw bytes, so the bound counts what arrived rather than what a decoder made of it.
+        # A body already in memory, as an in-process transport may supply, has nothing left
+        # to stream; after the encoding check it is the raw body, bounded the same way.
+        source = [response.content] if response.is_stream_consumed else response.iter_raw()
+        for chunk in source:
             total += len(chunk)
             if total > MAX_RESPONSE_BYTES:
                 message = (
@@ -294,8 +309,23 @@ def _poll_until_done(
     while time.monotonic() - started < deadline_seconds:
         body = _request_json(client, "POST", "/osc/commands/status", json={"id": command_id})
         state = body.get("state") if isinstance(body, dict) else None
-        if state in {"done", "error"}:
+        # Compared by equality, not set membership: the camera chooses this value, and a
+        # list or an object is unhashable, so `in {...}` would raise TypeError and abort
+        # the whole capture with a traceback.
+        if state == "done" or state == "error":
             return body
+        # Only "inProgress" means keep waiting. A malformed body or a state the protocol
+        # does not define is not a slow command: polling it until the deadline would report
+        # a broken response as a timeout, a minute late.
+        if state != "inProgress":
+            what = (
+                "a body that is not an object"
+                if not isinstance(body, dict)
+                else f"the unrecognised state "
+                f"{'(missing)' if state is None else bounded_text(state, 32)}"
+            )
+            message = f"The camera answered a status poll with {what}."
+            raise CaptureError(message)
         # Rechecked after the request: a poll that answers just past the deadline would
         # otherwise sleep and go round again, overshooting by a whole interval.
         if time.monotonic() - started >= deadline_seconds:

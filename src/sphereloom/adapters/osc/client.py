@@ -37,6 +37,7 @@ from typing import Any
 import httpx
 
 from sphereloom import __version__
+from sphereloom.adapters.osc.errors import map_vendor_error
 from sphereloom.domain.clock import Monotonic, SystemMonotonic
 from sphereloom.domain.errors import (
     InternalError,
@@ -45,7 +46,7 @@ from sphereloom.domain.errors import (
     OperationTimeoutError,
     RateLimitedError,
 )
-from sphereloom.domain.payloads import strict_json_loads
+from sphereloom.domain.payloads import bounded_text, strict_json_loads
 from sphereloom.logging import get_logger
 
 logger = get_logger("adapters.osc.client")
@@ -143,6 +144,10 @@ class OscHttpClient:
                 XSRF_HEADER: XSRF_VALUE,
                 "Content-Type": "application/json;charset=utf-8",
                 "Accept": "application/json",
+                # Asked for uncompressed bodies, and anything else is refused on arrival:
+                # httpx decompresses before yielding a chunk, so a small compressed body
+                # could expand far past the response limit before it was measured.
+                "Accept-Encoding": "identity",
                 "User-Agent": f"SphereLoom/{__version__}",
             },
             timeout=httpx.Timeout(
@@ -259,6 +264,7 @@ class OscHttpClient:
                 json=body,
                 retry_server_errors=name in RETRY_SAFE_COMMANDS,
                 command=name,
+                vendor_errors_to_caller=True,
             )
 
     async def command_status(self, command_id: str) -> dict[str, Any]:
@@ -268,7 +274,11 @@ class OscHttpClient:
         waiting for a capture would block every other call for the duration of the capture.
         """
         return await self._request_json(
-            "POST", STATUS_PATH, json={"id": command_id}, retry_server_errors=True
+            "POST",
+            STATUS_PATH,
+            json={"id": command_id},
+            retry_server_errors=True,
+            vendor_errors_to_caller=True,
         )
 
     @asynccontextmanager
@@ -338,6 +348,9 @@ class OscHttpClient:
                     backend=BACKEND,
                     details={"status_code": response.status_code},
                 )
+            # A media file is copied byte for byte. A compressed body would be expanded by
+            # httpx as the caller reads it, unbounded, and would no longer be the file.
+            _refuse_encoded_body(response, command=None)
 
             # An exception raised while the caller iterates the body is thrown back in at
             # this yield, so it is mapped here too rather than escaping as an httpx type.
@@ -410,6 +423,7 @@ class OscHttpClient:
         retry_server_errors: bool,
         command: str | None = None,
         before_attempt: Callable[[], Awaitable[None]] | None = None,
+        vendor_errors_to_caller: bool = False,
     ) -> dict[str, Any]:
         response, body = await self._send_with_retries(
             method,
@@ -419,7 +433,13 @@ class OscHttpClient:
             command=command,
             before_attempt=before_attempt,
         )
-        return self._parse_json(response, body, command=command)
+        payload = self._parse_json(response, body, command=command)
+        # A 4xx carries the vendor's error envelope. `execute` and `command_status` hand it
+        # back for the command runner to map with the command's context; every other
+        # endpoint maps it here, or `info()` would cache an error as the camera's identity.
+        if response.status_code >= 400 and not vendor_errors_to_caller:
+            raise map_vendor_error(payload, command=command)
+        return payload
 
     async def _send_once(
         self, method: str, path: str, *, json: Any, command: str | None
@@ -438,17 +458,32 @@ class OscHttpClient:
         return response, body
 
     async def _read_bounded(self, response: httpx.Response, *, command: str | None) -> bytes:
+        _refuse_encoded_body(response, command=command)
+
+        def too_large() -> InternalError:
+            return InternalError(
+                "The camera sent a response larger than SphereLoom will read. This is "
+                "not a response any documented command produces.",
+                backend=BACKEND,
+                details={"limit_bytes": MAX_RESPONSE_BYTES, "command": command},
+            )
+
+        # An in-process transport can hand over a body that is already in memory, with
+        # nothing left to stream. After the encoding check above it is the raw body, and
+        # the same limit applies to it.
+        if response.is_stream_consumed:
+            if len(response.content) > MAX_RESPONSE_BYTES:
+                raise too_large()
+            return response.content
+
         chunks: list[bytes] = []
         total = 0
-        async for chunk in response.aiter_bytes():
+        # Raw bytes, so the limit counts what arrived on the wire rather than what a
+        # decoder made of it.
+        async for chunk in response.aiter_raw():
             total += len(chunk)
             if total > MAX_RESPONSE_BYTES:
-                raise InternalError(
-                    "The camera sent a response larger than SphereLoom will read. This is "
-                    "not a response any documented command produces.",
-                    backend=BACKEND,
-                    details={"limit_bytes": MAX_RESPONSE_BYTES, "command": command},
-                )
+                raise too_large()
             chunks.append(chunk)
         return b"".join(chunks)
 
@@ -603,6 +638,23 @@ class OscHttpClient:
             )
 
         return payload
+
+
+def _refuse_encoded_body(response: httpx.Response, *, command: str | None) -> None:
+    """Refuse a body with any content encoding other than identity, before reading it.
+
+    The client asks for identity encoding, and httpx decompresses whatever arrives before
+    yielding a chunk, so a compressed body can expand far beyond a size limit before the
+    limit sees it. A camera that compresses anyway is answering a request nobody made.
+    """
+    encoding = response.headers.get("content-encoding", "").strip().lower()
+    if encoding not in {"", "identity"}:
+        raise InternalError(
+            "The camera sent a compressed response although SphereLoom asked for an "
+            "uncompressed one. It is refused rather than decompressed into memory.",
+            backend=BACKEND,
+            details={"content_encoding": bounded_text(encoding, 32), "command": command},
+        )
 
 
 def _malformed_message(command: str | None) -> str:

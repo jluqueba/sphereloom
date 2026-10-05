@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -1216,3 +1217,106 @@ async def test_an_unrecognised_state_during_polling_is_not_polled_forever(
 
     with pytest.raises(InternalError):
         await runner.run("camera.takePicture", deadline_seconds=5)
+
+
+# ---------------------------------------------------------------- encoding and 4xx bodies
+
+
+def _json_response(status: int, body: object, **headers: str) -> httpx.Response:
+    return httpx.Response(status, content=json.dumps(body).encode(), headers=headers)
+
+
+class _WireBody(httpx.AsyncByteStream):
+    """A body that arrives as a stream, as it does over a real socket.
+
+    `httpx.Response(content=...)` reads and decodes its body on construction, so a
+    compressed one would be expanded inside the transport before the client saw it, which
+    is not what happens on the network.
+    """
+
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield self._data
+
+
+async def test_the_client_asks_for_uncompressed_bodies() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("accept-encoding", ""))
+        return _json_response(200, {"batteryLevel": 0.5})
+
+    http = OscHttpClient("http://192.168.42.1", transport=httpx.MockTransport(handler))
+    try:
+        await http.state()
+    finally:
+        await http.aclose()
+
+    assert seen == ["identity"]
+
+
+@pytest.mark.parametrize("encoding", ["gzip", "deflate", "br"])
+async def test_a_compressed_response_is_refused_before_it_is_decompressed(encoding: str) -> None:
+    """httpx decompresses before yielding a chunk, so the size bound would come too late."""
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, stream=_WireBody(b'{"state": "done"}'), headers={"Content-Encoding": encoding}
+        )
+    )
+    http = OscHttpClient("http://192.168.42.1", transport=transport)
+    try:
+        with pytest.raises(InternalError, match="compressed"):
+            await http.state()
+    finally:
+        await http.aclose()
+
+
+async def test_a_compressed_download_is_refused() -> None:
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, stream=_WireBody(b"x"), headers={"Content-Encoding": "gzip"}
+        )
+    )
+    http = OscHttpClient("http://192.168.42.1", transport=transport)
+    try:
+        with pytest.raises(InternalError, match="compressed"):
+            async with http.stream("/DCIM/Camera01/IMG_0001.jpg"):
+                pass  # pragma: no cover - the context manager raises on entry
+    finally:
+        await http.aclose()
+
+
+async def test_a_4xx_from_info_is_an_error_and_is_not_cached() -> None:
+    """A 4xx carries a vendor error envelope. Returned as a payload, `info()` cached it as
+    the camera's identity, so every caller for the next second saw the error as success."""
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return _json_response(403, {"error": {"code": "invalidParameterValue", "message": "no"}})
+
+    http = OscHttpClient("http://192.168.42.1", transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(InvalidArgumentError):
+            await http.info()
+        with pytest.raises(InvalidArgumentError):
+            await http.info()
+    finally:
+        await http.aclose()
+
+    assert calls == 2
+
+
+async def test_a_4xx_from_state_is_an_error() -> None:
+    transport = httpx.MockTransport(
+        lambda request: _json_response(400, {"error": {"code": "unexpected", "message": "no"}})
+    )
+    http = OscHttpClient("http://192.168.42.1", transport=transport)
+    try:
+        with pytest.raises(InternalError):
+            await http.state()
+    finally:
+        await http.aclose()

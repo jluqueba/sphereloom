@@ -13,10 +13,12 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import httpx
 import pytest
 
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "capture_osc_fixtures.py"
@@ -271,3 +273,84 @@ def test_the_manifest_lists_the_fixtures_actually_written(tmp_path: Path) -> Non
 def _write_fixtures(captured: dict[str, Any], output: Path) -> None:
     """Drive the script's output stage directly, without needing a camera."""
     capture_osc_fixtures.write_outputs(captured, output)
+
+
+# ---------------------------------------------------------------- a misbehaving camera
+
+
+def _camera(handler: Any) -> httpx.Client:
+    return httpx.Client(
+        base_url="http://192.168.42.1",
+        headers=capture_osc_fixtures.HEADERS,
+        transport=httpx.MockTransport(handler),
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"state": "somethingElse"},
+        {"name": "camera.takePicture"},
+        ["not", "an", "object"],
+        # Unhashable states: a set-membership test raised TypeError on these.
+        {"state": ["x"]},
+        {"state": {"a": 1}},
+    ],
+)
+def test_an_unrecognised_poll_answer_fails_at_once(body: object) -> None:
+    """Only "inProgress" means keep waiting.
+
+    Anything else used to be polled until the deadline and then reported as a timeout,
+    which misreports a broken response as a slow command, a minute late.
+    """
+    polls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal polls
+        polls += 1
+        return httpx.Response(200, content=json.dumps(body).encode())
+
+    with _camera(handler) as client, pytest.raises(capture_osc_fixtures.CaptureError):
+        capture_osc_fixtures._poll_until_done(client, "cmd-1", deadline_seconds=60, interval=0)
+
+    assert polls == 1
+
+
+class _WireBody(httpx.SyncByteStream):
+    """A body that arrives as a stream, as it does over a real socket.
+
+    `httpx.Response(content=...)` reads and decodes its body on construction, so a
+    compressed one would be expanded inside the transport before the script saw it.
+    """
+
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    def __iter__(self) -> Iterator[bytes]:
+        yield self._data
+
+
+def test_a_compressed_response_is_refused() -> None:
+    """httpx decompresses before yielding a chunk, so the size bound would come too late."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=_WireBody(b"{}"), headers={"Content-Encoding": "gzip"})
+
+    with (
+        _camera(handler) as client,
+        pytest.raises(capture_osc_fixtures.CaptureError, match="compressed"),
+    ):
+        capture_osc_fixtures._request_json(client, "GET", "/osc/info")
+
+
+def test_the_capture_asks_for_uncompressed_bodies() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("accept-encoding", ""))
+        return httpx.Response(200, content=b"{}")
+
+    with _camera(handler) as client:
+        capture_osc_fixtures._request_json(client, "GET", "/osc/info")
+
+    assert seen == ["identity"]
