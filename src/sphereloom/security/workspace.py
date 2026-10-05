@@ -23,6 +23,12 @@ from sphereloom.domain.errors import PathJailError
 #: them everywhere keeps behaviour identical across platforms.
 _FORBIDDEN_CHARS = frozenset('<>:"|?*\0')
 
+#: Longest relative path accepted. The value comes from a tool call, so it is untrusted
+#: input: an agent can supply anything. Common filesystems reject far shorter paths, and a
+#: clear refusal here is better than an operating-system error raised halfway through a
+#: download.
+MAX_PATH_LENGTH = 1024
+
 
 class Workspace:
     """A directory that confines all file output."""
@@ -58,6 +64,12 @@ class Workspace:
                 "The destination path contains characters that are not allowed in a "
                 "filename. Use letters, digits, dots, dashes, underscores and forward "
                 "slashes.",
+            )
+
+        if len(text) > MAX_PATH_LENGTH:
+            raise PathJailError(
+                f"The destination path is longer than {MAX_PATH_LENGTH} characters. Use a "
+                "shorter name.",
             )
 
         candidate = PurePath(text)

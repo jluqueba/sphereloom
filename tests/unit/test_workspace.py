@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from sphereloom.domain.errors import PathJailError
-from sphereloom.security.workspace import Workspace
+from sphereloom.security.workspace import MAX_PATH_LENGTH, Workspace
 
 
 def test_a_simple_relative_path_resolves_inside_the_workspace(workspace: Workspace) -> None:
@@ -72,6 +72,22 @@ def test_a_symlink_pointing_outside_the_workspace_is_rejected(
 
     with pytest.raises(PathJailError):
         workspace.resolve("escape/secret.txt")
+
+
+def test_an_absurdly_long_path_is_rejected(workspace: Workspace) -> None:
+    """The path comes from a tool call, so an agent can supply anything.
+
+    A clear refusal beats an operating-system error raised halfway through a download.
+    """
+    with pytest.raises(PathJailError, match="longer than"):
+        workspace.resolve("a" * (MAX_PATH_LENGTH + 1))
+
+
+def test_a_long_but_usable_path_is_accepted(workspace: Workspace) -> None:
+    """Being strict must not reject names a user could reasonably choose."""
+    resolved = workspace.resolve("downloads/" + "a" * 100 + ".insv")
+
+    assert resolved.is_relative_to(workspace.root)
 
 
 def test_relative_display_hides_absolute_layout(workspace: Workspace) -> None:

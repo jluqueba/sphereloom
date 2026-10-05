@@ -115,6 +115,24 @@ FIXED_DATETIME = "2020:01:01 00:00:00+00:00"
 FILENAME_DATE = re.compile(r"(\d{8})_(\d{6})")
 
 
+#: Longest string preserved verbatim in a fixture. The camera is untrusted input: a value
+#: that is megabytes long would be written into a committed file unchanged.
+MAX_VALUE_LENGTH = 2000
+
+
+def _bounded_text(value: object, limit: int = MAX_VALUE_LENGTH) -> str:
+    """Render a camera-supplied scalar within a bound, refusing other shapes.
+
+    `str()` on an arbitrary payload materialises the whole structure before anything is
+    truncated, so a large list supplied where a name belongs would defeat the limit.
+    """
+    if isinstance(value, str):
+        return value if len(value) <= limit else value[:limit] + "…"
+    if isinstance(value, bool | int | float):
+        return str(value)
+    return "[malformed]"
+
+
 def redact(value: Any, *, found: set[str] | None = None) -> Any:
     """Return a copy of a JSON structure with sensitive material removed.
 
@@ -147,6 +165,11 @@ def redact(value: Any, *, found: set[str] | None = None) -> Any:
 
     if isinstance(value, list):
         return [redact(item, found=seen) for item in value]
+
+    if isinstance(value, str) and len(value) > MAX_VALUE_LENGTH:
+        # An unlisted key holding a very large string would otherwise be written into a
+        # committed fixture verbatim.
+        return value[:MAX_VALUE_LENGTH] + "…"
 
     return value
 
@@ -333,8 +356,12 @@ def write_outputs(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     info = redacted.get("info", {})
-    model = str(info.get("model", "unknown")) if isinstance(info, dict) else "unknown"
-    firmware = str(info.get("firmwareVersion", "unknown")) if isinstance(info, dict) else "unknown"
+    model = _bounded_text(info.get("model", "unknown")) if isinstance(info, dict) else "unknown"
+    firmware = (
+        _bounded_text(info.get("firmwareVersion", "unknown"))
+        if isinstance(info, dict)
+        else "unknown"
+    )
 
     # Clear fixtures this run did not produce. A read-only run after an earlier
     # --capture-photo run would otherwise leave take_picture_result.json in place, and the
@@ -411,8 +438,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  removed stale {name}", file=sys.stderr)
 
     info = redacted.get("info", {})
-    model = str(info.get("model", "unknown")) if isinstance(info, dict) else "unknown"
-    firmware = str(info.get("firmwareVersion", "unknown")) if isinstance(info, dict) else "unknown"
+    model = _bounded_text(info.get("model", "unknown")) if isinstance(info, dict) else "unknown"
+    firmware = (
+        _bounded_text(info.get("firmwareVersion", "unknown"))
+        if isinstance(info, dict)
+        else "unknown"
+    )
 
     print(
         f"\nCaptured {model}, firmware {firmware}."

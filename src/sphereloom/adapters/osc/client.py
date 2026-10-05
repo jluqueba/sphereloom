@@ -27,6 +27,7 @@ rather than between two kinds of command:
 from __future__ import annotations
 
 import asyncio
+import json as json_module
 import random
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
@@ -80,6 +81,12 @@ RETRY_SAFE_COMMANDS = frozenset(
 MAX_ATTEMPTS = 3
 BACKOFF_BASE_SECONDS = 0.25
 BACKOFF_MAX_SECONDS = 2.0
+
+#: Largest JSON response SphereLoom will read into memory. A listing with a thousand files
+#: is well under a megabyte, so this is generous; the point is that it is finite. The camera
+#: is an unauthenticated device on a network SphereLoom does not control, and reading an
+#: unbounded body from it would let a hostile or broken responder exhaust memory.
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 _RETRYABLE_STATUS = frozenset({500, 502, 503, 504})
 
@@ -376,7 +383,7 @@ class OscHttpClient:
         command: str | None = None,
         before_attempt: Callable[[], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
-        response = await self._send_with_retries(
+        response, body = await self._send_with_retries(
             method,
             path,
             json=json,
@@ -384,7 +391,38 @@ class OscHttpClient:
             command=command,
             before_attempt=before_attempt,
         )
-        return self._parse_json(response, command=command)
+        return self._parse_json(response, body, command=command)
+
+    async def _send_once(
+        self, method: str, path: str, *, json: Any, command: str | None
+    ) -> tuple[httpx.Response, bytes]:
+        """Send one request and read a bounded body.
+
+        Streamed rather than buffered by httpx so the size limit applies while reading,
+        not after the whole body is already in memory.
+        """
+        request = self._client.build_request(method, path, json=json)
+        response = await self._client.send(request, stream=True)
+        try:
+            body = await self._read_bounded(response, command=command)
+        finally:
+            await response.aclose()
+        return response, body
+
+    async def _read_bounded(self, response: httpx.Response, *, command: str | None) -> bytes:
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in response.aiter_bytes():
+            total += len(chunk)
+            if total > MAX_RESPONSE_BYTES:
+                raise InternalError(
+                    "The camera sent a response larger than SphereLoom will read. This is "
+                    "not a response any documented command produces.",
+                    backend=BACKEND,
+                    details={"limit_bytes": MAX_RESPONSE_BYTES, "command": command},
+                )
+            chunks.append(chunk)
+        return b"".join(chunks)
 
     async def _send_with_retries(
         self,
@@ -395,7 +433,7 @@ class OscHttpClient:
         retryable: bool,
         command: str | None,
         before_attempt: Callable[[], Awaitable[None]] | None = None,
-    ) -> httpx.Response:
+    ) -> tuple[httpx.Response, bytes]:
         attempts = MAX_ATTEMPTS if retryable else 1
         last_error: Exception | None = None
 
@@ -406,7 +444,7 @@ class OscHttpClient:
                 await before_attempt()
 
             try:
-                response = await self._client.request(method, path, json=json)
+                response, body = await self._send_once(method, path, json=json, command=command)
             except (httpx.ConnectTimeout, httpx.PoolTimeout, httpx.ConnectError) as exc:
                 # Nothing reached the camera, so repeating is safe.
                 last_error = exc
@@ -447,7 +485,7 @@ class OscHttpClient:
                 if response.status_code in _RETRYABLE_STATUS and attempt < attempts:
                     await self._backoff(attempt)
                     continue
-                return response
+                return response, body
 
             await self._backoff(attempt)
 
@@ -461,7 +499,9 @@ class OscHttpClient:
         delay = min(BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)), BACKOFF_MAX_SECONDS)
         await asyncio.sleep(delay * (0.5 + random.random() / 2))  # noqa: S311
 
-    def _parse_json(self, response: httpx.Response, *, command: str | None) -> dict[str, Any]:
+    def _parse_json(
+        self, response: httpx.Response, body: bytes, *, command: str | None
+    ) -> dict[str, Any]:
         if response.status_code == 429:
             raise RateLimitedError(
                 "The camera is rejecting requests as too frequent. Slow down and retry.",
@@ -493,14 +533,17 @@ class OscHttpClient:
             )
 
         try:
-            payload = response.json()
+            payload = json_module.loads(body)
         except ValueError as exc:
             # Some firmware returns malformed JSON under load. Treating it as a crash would
             # be unhelpful; reporting it with a bounded excerpt is diagnosable.
             raise InternalError(
                 _malformed_message(command),
                 backend=BACKEND,
-                details={"excerpt": response.text[:200], "command": command},
+                details={
+                    "excerpt": body[:200].decode("utf-8", errors="replace"),
+                    "command": command,
+                },
                 retryable=_is_safe_to_repeat(command),
             ) from exc
 

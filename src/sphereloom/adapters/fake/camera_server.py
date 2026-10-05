@@ -89,6 +89,21 @@ def _is_accepted(value: Any, candidate: Any) -> bool:
     return bool(value == candidate)
 
 
+def _bounded_int(value: Any, *, maximum: int) -> int | None:
+    """Coerce a client-supplied count, refusing anything that is not a sane number.
+
+    `int()` on arbitrary input raises, which a real camera would not do, and an unbounded
+    count would let one request ask the fake to build an arbitrarily large response.
+    Booleans are refused explicitly because `True == 1` in Python. Returns None when the
+    value cannot be used, so the caller answers with a vendor error instead.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    if value != int(value) or value < 0:
+        return None
+    return min(int(value), maximum)
+
+
 @dataclass(slots=True)
 class FakeFile:
     """One file on the fake camera's card."""
@@ -277,6 +292,22 @@ class FakeCamera:
                 status_code=403,
             )
 
+        if self.scenario.redirect_responses:
+            return JSONResponse(
+                {"name": "redirected"},
+                status_code=302,
+                headers={"Location": "/elsewhere"},
+            )
+
+        if self.scenario.oversized_responses:
+            # Streamed so the fake does not have to hold the whole thing either.
+            async def flood() -> AsyncIterator[bytes]:
+                block = b'{"padding": "' + b"x" * 65_536
+                for _ in range(200):
+                    yield block
+
+            return StreamingResponse(flood(), media_type="application/json")
+
         return self._path_failure(request)
 
     def _should_fail_command(self) -> bool:
@@ -381,7 +412,19 @@ class FakeCamera:
             )
 
         name = str(payload.get("name", ""))
-        parameters = payload.get("parameters") or {}
+        parameters = payload.get("parameters")
+        if parameters is None:
+            parameters = {}
+        elif not isinstance(parameters, dict):
+            return JSONResponse(
+                {
+                    "error": {
+                        "code": "invalidParameterValue",
+                        "message": "parameters must be an object.",
+                    }
+                },
+                status_code=400,
+            )
         self.request_log.append(f"POST /osc/commands/execute {name}")
 
         if self.scenario.server_error:
@@ -521,7 +564,13 @@ class FakeCamera:
     # ------------------------------------------------------------------ commands
 
     def _get_options(self, request: Request, parameters: dict[str, Any]) -> Response:
-        requested = parameters.get("optionNames") or []
+        requested = parameters.get("optionNames")
+        if requested is None:
+            requested = []
+        elif not isinstance(requested, list):
+            return self._vendor_error(
+                "camera.getOptions", "invalidParameterValue", "optionNames must be a list."
+            )
         available: dict[str, Any] = {
             "captureMode": self.state.capture_mode,
             "captureModeSupport": list(SUPPORTED_CAPTURE_MODES),
@@ -564,7 +613,13 @@ class FakeCamera:
     }
 
     def _set_options(self, request: Request, parameters: dict[str, Any]) -> Response:
-        options = parameters.get("options") or {}
+        options = parameters.get("options")
+        if options is None:
+            options = {}
+        elif not isinstance(options, dict):
+            return self._vendor_error(
+                "camera.setOptions", "invalidParameterValue", "options must be an object."
+            )
 
         # The vendor documents no exposure control over this protocol. Rejecting it here
         # keeps the fake honest: if the adapter ever claims to support it, a test fails.
@@ -702,9 +757,25 @@ class FakeCamera:
         )
 
     def _list_files(self, request: Request, parameters: dict[str, Any]) -> Response:
-        file_type = str(parameters.get("fileType", "all"))
-        entry_count = int(parameters.get("entryCount", 10))
-        start_position = int(parameters.get("startPosition", 0))
+        file_type = parameters.get("fileType", "all")
+        if not isinstance(file_type, str):
+            return self._vendor_error(
+                "camera.listFiles", "invalidParameterValue", "fileType must be a string."
+            )
+
+        entry_count = _bounded_int(parameters.get("entryCount", 10), maximum=1000)
+        if entry_count is None:
+            return self._vendor_error(
+                "camera.listFiles", "invalidParameterValue", "entryCount must be a number."
+            )
+
+        start_position = _bounded_int(parameters.get("startPosition", 0), maximum=100_000)
+        if start_position is None:
+            return self._vendor_error(
+                "camera.listFiles",
+                "invalidParameterValue",
+                "startPosition must be a number.",
+            )
 
         if file_type == "all":
             selected = list(self.state.files)
@@ -739,7 +810,13 @@ class FakeCamera:
         )
 
     def _delete(self, request: Request, parameters: dict[str, Any]) -> Response:
-        requested = parameters.get("fileUrls") or []
+        requested = parameters.get("fileUrls")
+        if requested is None:
+            requested = []
+        elif not isinstance(requested, list):
+            return self._vendor_error(
+                "camera.delete", "invalidParameterValue", "fileUrls must be a list."
+            )
         known = {f.name: f for f in self.state.files}
 
         missing: list[str] = []

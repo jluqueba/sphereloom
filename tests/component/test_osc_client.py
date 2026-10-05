@@ -13,7 +13,6 @@ import contextlib
 import time
 from collections.abc import AsyncIterator
 
-import httpx
 import pytest
 
 from sphereloom.adapters.fake import scenarios
@@ -21,6 +20,7 @@ from sphereloom.adapters.fake.camera_server import FakeCamera
 from sphereloom.adapters.fake.runner import run_fake_camera
 from sphereloom.adapters.osc.client import (
     INFO_MIN_INTERVAL_SECONDS,
+    MAX_RESPONSE_BYTES,
     RETRY_SAFE_COMMANDS,
     OscHttpClient,
 )
@@ -538,24 +538,45 @@ async def test_a_timeout_after_acceptance_is_not_advertised_as_retryable() -> No
     assert caught.value.details["command_id"]
 
 
-async def test_a_redirect_in_the_json_path_is_not_accepted_as_a_result(
-    client: OscHttpClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_an_oversized_response_is_refused_rather_than_read() -> None:
+    """The camera is unauthenticated and on a network SphereLoom does not control.
+
+    Reading an unbounded body from it would let a hostile or broken responder exhaust
+    memory, so the read is capped while streaming rather than after the fact.
+    """
+    camera = FakeCamera(scenario=scenarios.OVERSIZED)
+    with run_fake_camera(camera) as base_url:
+        http = OscHttpClient(base_url)
+        try:
+            with pytest.raises(InternalError) as caught:
+                await http.state()
+        finally:
+            await http.aclose()
+
+    assert caught.value.details["limit_bytes"] == MAX_RESPONSE_BYTES
+
+
+async def test_a_normal_response_is_well_under_the_limit(client: OscHttpClient) -> None:
+    """The cap must be generous enough that real listings never approach it."""
+    payload = await client.execute("camera.listFiles", {"fileType": "all", "entryCount": 50})
+
+    assert payload["state"] == "done"
+
+
+async def test_a_redirect_in_the_json_path_is_not_accepted_as_a_result() -> None:
     """Redirects are not followed, so a 3xx body is not an OSC response.
 
     Accepting it would treat a redirect page as a command result. The same rule already
     guarded downloads; it was missing here, which is the same defect in a second place.
     """
-    original = client._client.request
-
-    async def redirecting(*args: object, **kwargs: object) -> httpx.Response:
-        response = await original(*args, **kwargs)  # type: ignore[arg-type]
-        return httpx.Response(302, json={"name": "camera.getOptions"}, request=response.request)
-
-    monkeypatch.setattr(client._client, "request", redirecting)
-
-    with pytest.raises(InternalError) as caught:
-        await client.state()
+    camera = FakeCamera(scenario=scenarios.REDIRECTING)
+    with run_fake_camera(camera) as base_url:
+        http = OscHttpClient(base_url)
+        try:
+            with pytest.raises(InternalError) as caught:
+                await http.state()
+        finally:
+            await http.aclose()
 
     assert caught.value.details["status_code"] == 302
 

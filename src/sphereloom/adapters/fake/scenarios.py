@@ -41,6 +41,15 @@ class Scenario:
     #: their phone app. Nothing SphereLoom does can recover from it, so the message matters.
     unactivated: bool = False
 
+    #: Answer protocol requests with a body larger than any documented command produces.
+    #: The camera is unauthenticated, so a hostile or broken responder on its network must
+    #: not be able to exhaust the client's memory.
+    oversized_responses: bool = False
+
+    #: Answer protocol requests with a redirect. Clients do not follow redirects, so the
+    #: body is not a result; a caller that accepted it would treat a redirect page as one.
+    redirect_responses: bool = False
+
     #: Send fewer bytes than the declared Content-Length, simulating a truncated transfer.
     truncate_downloads: bool = False
 
@@ -68,6 +77,8 @@ MALFORMED_JSON = Scenario(malformed_json=True)
 SERVER_ERROR = Scenario(server_error=True)
 UNACTIVATED = Scenario(unactivated=True)
 SLOW = Scenario(latency_seconds=0.5)
+REDIRECTING = Scenario(redirect_responses=True)
+OVERSIZED = Scenario(oversized_responses=True)
 TRUNCATED_DOWNLOAD = Scenario(truncate_downloads=True)
 DROPPED_DOWNLOAD = Scenario(drop_downloads=True)
 FLAKY = Scenario(fail_first_n_commands=2)
