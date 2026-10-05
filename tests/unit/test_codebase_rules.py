@@ -264,21 +264,39 @@ def test_no_broad_exception_is_swallowed_without_a_reason() -> None:
 
 
 def _is_default_value(node: ast.expr) -> bool:
-    """Whether this looks like a supplied default rather than the other half of a test.
+    """Whether the right-hand side of an `or` looks like a supplied default.
 
-    Defaulting is `x or <something constructed here>`: a literal, an empty container, or a
-    constructor taking no arguments. A call *with* arguments is almost always a predicate
-    -- `isinstance(x, bool)`, `text.startswith("/")`, `path.is_relative_to(root)` -- and
-    flagging those would make the rule noise, which is how a rule gets switched off.
+    A literal (including a negated number such as `-1`), a container display, or any call:
+    `SystemMonotonic()`, `set()`, `Path.cwd()`, `datetime.now(UTC)`, `_default_clock()`.
+    Whether the `or` is defaulting at all is decided by where it is used, in
+    `_in_boolean_context`, which is what lets every call count here.
     """
-    if isinstance(node, ast.Constant | ast.Dict | ast.List | ast.Set | ast.Tuple):
+    if isinstance(node, ast.UnaryOp) and isinstance(node.operand, ast.Constant):
         return True
-    return (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name | ast.Attribute)
-        and not node.args
-        and not node.keywords
-    )
+    return isinstance(node, ast.Constant | ast.Dict | ast.List | ast.Set | ast.Tuple | ast.Call)
+
+
+def _in_boolean_context(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> bool:
+    """Whether an expression's value is only ever tested for truth, never used.
+
+    `if not kept or kept.isspace():` is boolean logic, while `x = value or SystemMonotonic()`
+    produces a value. The difference is the position, not the operands, so a call on the
+    right is only suspicious where the result is kept.
+    """
+    child, parent = node, parents.get(node)
+    while parent is not None:
+        if isinstance(parent, ast.If | ast.While | ast.IfExp | ast.Assert) and (
+            getattr(parent, "test", None) is child
+        ):
+            return True
+        if isinstance(parent, ast.UnaryOp) and isinstance(parent.op, ast.Not):
+            return True
+        if isinstance(parent, ast.comprehension) and child in parent.ifs:
+            return True
+        if not isinstance(parent, ast.BoolOp):
+            return False
+        child, parent = parent, parents.get(parent)
+    return False
 
 
 def test_defaulting_uses_is_none_rather_than_or() -> None:
@@ -288,18 +306,28 @@ def test_defaulting_uses_is_none_rather_than_or() -> None:
     breaks the moment a type grows a `__bool__` or `__len__`. Defaulting must test for
     `None`, which is what "not supplied" actually means.
 
-    Every `or` is considered, not only those in an assignment: `return x or default`,
-    `d.get(k) or default` and `f(timeout=x or 5)` are the same defect.
+    Every `or` whose value is used is considered, not only those in an assignment:
+    `return x or default`, `d.get(k) or default` and `f(timeout=x or 5)` are the same
+    defect. An `or` that is only tested for truth is boolean logic and is left alone.
     """
     offenders: list[str] = []
 
     for path in _python_files():
         tree = ast.parse(path.read_text(encoding="utf-8"))
         comments = _comments(path)
+        parents = {
+            child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)
+        }
         for node in ast.walk(tree):
             if not isinstance(node, ast.BoolOp) or not isinstance(node.op, ast.Or):
                 continue
-            if not _is_default_value(node.values[-1]):
+            if not _is_default_value(node.values[-1]) or _in_boolean_context(node, parents):
+                continue
+            # `a == b or c.is_relative_to(d)` returns a truth value: a comparison or a
+            # negation on the left means every operand is a condition, not a value.
+            if isinstance(node.values[0], ast.Compare) or (
+                isinstance(node.values[0], ast.UnaryOp) and isinstance(node.values[0].op, ast.Not)
+            ):
                 continue
             if not _is_exempt(comments, node.lineno, "or-default"):
                 offenders.append(f"{_relative(path)}:{node.lineno}")

@@ -12,6 +12,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   origin before following it. Download URLs arrive in device responses, and a malformed or
   hostile payload could otherwise make SphereLoom fetch an arbitrary host with the client's
   headers attached.
+- Log redaction now covers tracebacks and strings nested anywhere in a record's structured
+  context. Previously only the message and top-level context values were redacted, so a
+  traceback could record absolute file paths containing the user's home directory.
+- Log records are bounded before they are redacted or formatted, and every cut ends on a
+  word boundary so that a truncated value never leaves a fragment of a secret too short
+  for redaction to recognise.
+- A destination path that resolves to the workspace directory itself is refused. Writing
+  to it previously placed the temporary download file in the workspace's parent directory,
+  outside the path jail.
 
 ### Added
 

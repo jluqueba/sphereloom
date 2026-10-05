@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import os
 import socket
+from collections.abc import Iterator
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
@@ -109,3 +111,44 @@ def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     """Default settings pointed at an isolated workspace."""
     monkeypatch.setenv("SPHERELOOM_WORKSPACE_DIR", str(tmp_path / "workspace"))
     return Settings()
+
+
+class InstrumentedStr(str):
+    """A string that records how much of itself was read and refuses whole-string work.
+
+    Proving that a bound limits the *work*, not just the result, cannot be done with a
+    stopwatch: on a shared CI runner no threshold reliably separates the fixed cost from the
+    regressed one, so such a test either flakes or passes a regression. This makes the work
+    observable instead. Iteration is counted, and the operations that touch every character
+    at once -- `strip`, `split`, `encode`, `__str__` -- raise, so an implementation that
+    reaches for them on oversized input fails deterministically.
+
+    Slicing and `len` are left alone because they are what a bounded implementation uses.
+    """
+
+    consumed: int
+
+    def __new__(cls, value: str) -> InstrumentedStr:
+        instance = super().__new__(cls, value)
+        instance.consumed = 0
+        return instance
+
+    def __iter__(self) -> Iterator[str]:
+        for character in str.__iter__(self):
+            self.consumed += 1
+            yield character
+
+    def _refuse(self, *args: object, **kwargs: object) -> NoReturn:
+        message = "a whole-string operation ran on input that should have been bounded first"
+        raise AssertionError(message)
+
+    strip = _refuse
+    split = _refuse
+    encode = _refuse
+    __str__ = _refuse
+
+
+@pytest.fixture
+def instrumented_str() -> type[InstrumentedStr]:
+    """The `InstrumentedStr` class, for tests that need to observe how much input was read."""
+    return InstrumentedStr

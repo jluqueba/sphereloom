@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from sphereloom.adapters.osc.commands import (
+    COMMAND_ID_MAX_LENGTH,
     _completion,
     _results,
     _validated_deadline,
@@ -105,14 +106,16 @@ def test_a_completion_outside_the_documented_range_is_dropped(value: Any) -> Non
 # ---------------------------------------------------------------- validator robustness
 
 
-def test_an_enormous_padded_command_id_is_rejected_without_being_normalised() -> None:
+def test_an_enormous_padded_command_id_is_rejected_without_being_normalised(
+    instrumented_str: Any,
+) -> None:
     """`strip()` copies the whole string, so the bound must be checked on the raw value.
 
-    The assertion is the verdict, not a stopwatch: `strip()` on fifty million spaces takes
-    about forty milliseconds, which no timing threshold can separate from the correct
-    behaviour on a shared CI runner. The ordering is what the test pins down.
+    The verdict catches the ordering for this input -- stripping first would leave "abc",
+    which is short enough to be accepted -- and the instrumented string, which refuses to
+    be stripped, catches it for any input, including one that would be refused either way.
     """
-    padded = " " * 50_000_000 + "abc"
+    padded = instrumented_str(" " * (COMMAND_ID_MAX_LENGTH + 1) + "abc")
 
     assert validated_command_id(padded) is None
 

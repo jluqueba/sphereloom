@@ -152,7 +152,8 @@
 
 ## Testing
 
-- Unit and component tests must run without real hardware.- Use a fake OSC camera HTTP stub as the default backend in tests.
+- Unit and component tests must run without real hardware.
+- Use a fake OSC camera HTTP stub as the default backend in tests.
 - Real-camera tests must be optional and marker-gated.
 - Real-camera tests require an explicit environment variable.
 - Real-camera tests must not run in CI by default.
@@ -163,7 +164,7 @@
 - Include tests for path jail enforcement and redaction behavior when implementing those features.
 - Never assert a platform's own behaviour. CI runs Ubuntu and Windows, and a filename a tab makes illegal on one is legal on the other. Inject the failure instead of provoking it, so the test asserts the guarantee rather than the quirk; gate with `skipif` only when injection is impossible.
 - Run the suite on Linux as well as Windows before pushing; CI runs both.
-- Choose a timing threshold by measuring both the fixed and the regressed cost, and record both in the docstring. A threshold a regression would still pass under is decoration.
+- Do not prove that work is bounded with a stopwatch. On a shared CI runner no threshold reliably separates the fixed cost from the regressed one, so the test either flakes or passes the regression. Observe the work instead with the `instrumented_str` fixture, which counts what was read and refuses whole-string operations.
 
 ## Documentation
 

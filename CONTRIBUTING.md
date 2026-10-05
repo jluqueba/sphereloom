@@ -95,7 +95,7 @@ CI runs on Ubuntu and Windows. Developing on one of them alone has already sent 
 
 Run the suite under WSL Ubuntu, or any Linux with the project's Python, before pushing.
 
-When a behaviour genuinely differs between platforms, do not encode one platform's answer in an assertion. Either gate the test with `@pytest.mark.skipif(sys.platform == ...)`, or — better — inject the failure instead of provoking it, so the test asserts the guarantee rather than the quirk. `test_a_refusal_from_the_operating_system_becomes_a_path_jail_error` patches `mkdir`, `mkstemp` and `replace` to raise, which tests all three translations on every platform.
+When a behaviour genuinely differs between platforms, do not encode one platform's answer in an assertion. Inject the failure instead of provoking it, so the test asserts the guarantee rather than the quirk: `test_a_refusal_from_the_operating_system_becomes_a_path_jail_error` patches `mkdir`, `mkstemp` and `replace` to raise, which tests all three translations on every platform. Gate a test with `@pytest.mark.skipif(sys.platform == ...)` only when injection is impossible, as with creating a real symlink on Windows.
 
 The repository uses a single required status check named `ci-gate`. The CI design uses change detection so documentation-only PRs can skip heavy jobs while the required gate still reports success. PRs are squash-merged using the PR title.
 

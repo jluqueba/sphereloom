@@ -7,17 +7,19 @@ twice before, and only one copy was correct, which is why it now lives in one pl
 from __future__ import annotations
 
 import json
-import time
 from typing import Any
 
 import pytest
 
 from sphereloom.domain.payloads import (
+    CUT_SEARCH,
     ELLIPSIS,
     MALFORMED,
     MAX_NODES,
+    MAX_SCAN_MULTIPLE,
     bounded_payload,
     bounded_text,
+    cut_text,
     strict_json_loads,
 )
 
@@ -218,24 +220,19 @@ def test_an_integer_within_the_limit_is_not_truncated() -> None:
     assert bounded_text(10**60, 64) == str(10**60)
 
 
-def test_whitespace_collapsing_does_not_materialise_the_whole_string() -> None:
+def test_whitespace_collapsing_does_not_materialise_the_whole_string(instrumented_str: Any) -> None:
     """`" ".join(value.split())` built every token before the limit applied.
 
-    Nine megabytes of short words became millions of objects on an error path. The result
-    was always bounded; the work was not, so the elapsed time is the only witness.
-
-    Measured, so the threshold is chosen rather than guessed: the fixed path takes under a
-    millisecond and the old one 0.4 seconds on this input. Two seconds leaves room for a
-    loaded CI runner while staying far below a regression.
+    Megabytes of short words became millions of objects on an error path. The result was
+    always bounded; the work was not, so the test observes the work: `split` refuses to
+    run, and only a little more than the limit may be read.
     """
-    huge = "ab " * 9_000_000
+    words = instrumented_str("ab " * 100_000)
 
-    started = time.monotonic()
-    result = bounded_text(huge, 64)
-    elapsed = time.monotonic() - started
+    result = bounded_text(words, 64)
 
     assert len(result) <= 65
-    assert elapsed < 2.0
+    assert words.consumed <= 64 * 2
 
 
 @pytest.mark.parametrize(
@@ -253,20 +250,18 @@ def test_whitespace_collapsing_matches_the_obvious_implementation(raw: str, expe
     assert bounded_text(raw, 200) == expected
 
 
-def test_an_all_whitespace_value_does_not_cost_its_full_length() -> None:
+def test_an_all_whitespace_value_does_not_cost_its_full_length(instrumented_str: Any) -> None:
     """Bounding the output does not bound the work: whitespace produces no output.
 
-    Without a scan budget this field is walked in full however short the limit is.
-    Measured on this input: bounded is immediate, unbounded takes 3.6 seconds.
+    Without a scan budget an all-blank field is walked in full however short the limit is.
+    The budget is what stops the read, so the read is what the test measures.
     """
-    blank = " " * 50_000_000
+    blank = instrumented_str(" " * 100_000)
 
-    started = time.monotonic()
     result = bounded_text(blank, 64)
-    elapsed = time.monotonic() - started
 
     assert len(result) <= 65
-    assert elapsed < 2.0
+    assert blank.consumed <= 64 * MAX_SCAN_MULTIPLE + 1
 
 
 def test_a_value_padded_past_the_scan_budget_is_marked_as_truncated() -> None:
@@ -303,3 +298,46 @@ def test_a_usable_document_still_decodes() -> None:
         "b": 2.5,
         "c": [True, None],
     }
+
+
+def test_a_cut_ends_on_a_word_boundary_when_one_is_near() -> None:
+    """A partial word left at the end is what log redaction cannot recognise."""
+    assert cut_text("alpha beta gamma delta", 13) == "alpha beta" + ELLIPSIS
+
+
+def test_a_cut_inside_a_long_run_keeps_the_run() -> None:
+    """With no whitespace near the limit, what is kept is long enough to be recognised."""
+    run = "a" * (CUT_SEARCH * 3)
+
+    assert (
+        cut_text("prefix " + run, CUT_SEARCH * 2) == ("prefix " + run)[: CUT_SEARCH * 2] + ELLIPSIS
+    )
+
+
+def test_text_within_the_limit_is_unchanged() -> None:
+    assert cut_text("short  text", 64) == "short  text"
+
+
+def test_the_scan_budget_does_not_leave_a_partial_word() -> None:
+    """Stopping part-way through the input may stop part-way through a word.
+
+    The padding is sized so reading stops three characters into the token.
+    """
+    padded = "Bearer" + " " * (64 * MAX_SCAN_MULTIPLE - 9) + "SECRETTOKEN"
+
+    assert "SEC" not in bounded_text(padded, 64)
+
+
+def test_a_cut_never_returns_only_whitespace_when_there_was_content() -> None:
+    """Backing off to a boundary that leaves nothing but whitespace discards the value.
+
+    Two leading spaces, so the text before the boundary is whitespace rather than empty
+    and both halves of the guard are exercised.
+    """
+    assert cut_text("  " + "a" * 100, 50) == "  " + "a" * 48 + ELLIPSIS
+
+
+def test_a_value_already_marked_by_the_scan_budget_is_not_cut_again() -> None:
+    """Cutting a marked result again dropped a whole final word to make room for a marker
+    that was already there."""
+    assert bounded_text("alpha beta" + " " * 200 + "gamma", 10) == "alpha beta" + ELLIPSIS

@@ -5,8 +5,8 @@ from __future__ import annotations
 import errno
 import sys
 import tempfile
-import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -202,25 +202,21 @@ def test_a_name_that_fits_with_its_temporary_file_is_written(
     assert destination.read_bytes() == b"data"
 
 
-def test_an_enormous_raw_path_is_rejected_before_it_is_scanned(workspace: Workspace) -> None:
+def test_an_enormous_raw_path_is_rejected_before_it_is_scanned(
+    workspace: Workspace, instrumented_str: Any
+) -> None:
     """The limit ran after `strip()` copied the string and `set()` scanned every character.
 
     The argument comes from a tool call, so that work happened before the limit it
-    violates applied. The elapsed time is the only witness: the verdict is the same either
-    way, only the cost of reaching it differs.
-
-    Measured on this input: refusing on the character count is immediate, while the old
-    `strip()` plus `set()` took 0.9 seconds. One second separates them with room for a
-    loaded runner.
+    violates applied. The verdict is the same either way, so the test observes the work:
+    `strip`, `encode` and iteration all fail the test if they run before the length check.
     """
-    huge = "a" * 50_000_000
+    oversized = instrumented_str("a" * (MAX_PATH_LENGTH + 1))
 
-    started = time.monotonic()
     with pytest.raises(PathJailError, match="longer than"):
-        workspace.resolve(huge)
-    elapsed = time.monotonic() - started
+        workspace.resolve(oversized)
 
-    assert elapsed < 1.0
+    assert oversized.consumed == 0
 
 
 def test_the_total_path_limit_counts_bytes_not_characters(workspace: Workspace) -> None:

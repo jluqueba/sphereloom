@@ -45,6 +45,11 @@ MAX_INT_BITS = 4096
 #: output, so a field of nothing but spaces would be scanned in full whatever the limit.
 MAX_SCAN_MULTIPLE = 16
 
+#: How far back from a limit `cut_text` looks for whitespace. It must be at least as long
+#: as the shortest run a log redaction pattern needs -- eight characters, for a bearer
+#: token -- so that a run too long to back out of is always long enough to be recognised.
+CUT_SEARCH = 64
+
 #: Stands in for anything that was removed, truncated or could not be represented.
 ELLIPSIS = "…"
 MALFORMED = "[malformed]"
@@ -105,7 +110,13 @@ def bounded_text(value: Any, limit: int = MAX_STRING_LENGTH) -> str:
     CPython raises above 4300 digits rather than render it.
     """
     if isinstance(value, str):
-        return _truncate(_collapse_whitespace(value, limit), limit)
+        collapsed = _collapse_whitespace(value, limit)
+        # A collapse that stopped on its scan budget has already ended on a word boundary
+        # and marked itself. Cutting it again would drop a whole final word to make room
+        # for a marker that is already there.
+        if collapsed.endswith(ELLIPSIS) and len(collapsed) <= limit + 1:
+            return collapsed
+        return _truncate(collapsed, limit)
     if value is None:
         return ""
     if isinstance(value, bool | float):
@@ -118,7 +129,41 @@ def bounded_text(value: Any, limit: int = MAX_STRING_LENGTH) -> str:
 
 
 def _truncate(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[:limit] + ELLIPSIS
+    return cut_text(text, limit)
+
+
+def cut_text(text: str, limit: int) -> str:
+    """Shorten `text` to at most `limit` characters, ending on a word boundary if one is near.
+
+    Where a cut lands matters because bounding happens before log redaction. Every
+    redaction pattern matches a run of characters containing no whitespace, and the
+    shortest run any of them needs is eight characters. A plain slice that lands three
+    characters into a bearer token leaves a prefix no pattern recognises, and that prefix
+    is then logged.
+
+    So the cut backs off to the last whitespace within `CUT_SEARCH` characters of the
+    limit, which discards a partial token whole. If there is no whitespace that close, the
+    run being cut is at least `CUT_SEARCH` long, which is enough for every pattern to
+    recognise what is kept. The work is bounded by `limit`, whatever the length of `text`.
+    """
+    if len(text) <= limit:
+        return text
+    return _end_on_boundary(text[:limit]) + ELLIPSIS
+
+
+def _end_on_boundary(head: str) -> str:
+    """Drop a trailing partial word, if a word boundary lies within `CUT_SEARCH` of the end.
+
+    Shared by every place that stops reading part-way through a string, because each of
+    them can otherwise leave a fragment of a secret that log redaction cannot recognise.
+    A boundary that would leave nothing but whitespace is ignored: the run after it is then
+    the whole of what was kept, and long enough to be recognised.
+    """
+    for index in range(len(head) - 1, max(0, len(head) - CUT_SEARCH) - 1, -1):
+        if head[index].isspace():
+            kept = head[:index]
+            return head if not kept or kept.isspace() else kept
+    return head
 
 
 def _collapse_whitespace(value: str, limit: int) -> str:
@@ -140,8 +185,14 @@ def _collapse_whitespace(value: str, limit: int) -> str:
     pending_space = False
     for index, char in enumerate(value):
         if index >= scan_budget:
-            out.append(ELLIPSIS)
-            break
+            kept = "".join(out)
+            # Reading stopped part-way through the input, which may be part-way through a
+            # word. Unless the last character read was whitespace, the final word may
+            # continue beyond the budget, so it goes through the same boundary rule as any
+            # other cut rather than leaving a fragment for redaction to miss.
+            if not pending_space:
+                kept = _end_on_boundary(kept)
+            return kept + ELLIPSIS
         if char.isspace():
             # Leading whitespace produces no separator, matching `split()`.
             pending_space = bool(out)

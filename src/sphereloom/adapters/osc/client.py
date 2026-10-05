@@ -16,8 +16,9 @@ rather than between two kinds of command:
 * **Setup failures** -- connect timeouts, pool timeouts, connection errors. The camera
   never saw the request, so repeating it is unambiguously safe.
 * **Completed server responses** -- 500, 502, 503, 504 for a command on the safe-command
-  allowlist. The camera did see the request, but it answered without acting, so a listing
-  or an options read may be repeated.
+  allowlist. The camera did see the request, and a 5xx does not prove it did nothing. The
+  retry is safe because the allowlist contains only side-effect-free reads, such as a
+  listing or an options read, which can be repeated whatever the camera did the first time.
 * **Ambiguous post-send failures** -- a read or write timeout, a dropped connection after
   transmission. The request arrived and the camera may be acting on it right now. These are
   never retried automatically, and when the command changes state they are reported as

@@ -304,8 +304,7 @@ def _poll_until_done(
 
     message = (
         f"Command {bounded_text(command_id, 64)} did not finish within "
-        f"{deadline_seconds:.0f}s. The camera may still be writing the file; nothing was "
-        "left in a bad state."
+        f"{deadline_seconds:.0f}s. The camera may still be writing the file."
     )
     raise TimeoutError(message)
 

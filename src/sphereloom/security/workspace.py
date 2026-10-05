@@ -60,8 +60,7 @@ def _translate_os_error(exc: OSError, *, during: str) -> SphereLoomError:
     """
     if exc.errno in {errno.ENOSPC, errno.EDQUOT}:
         return StorageFullError(
-            f"There is not enough space in the workspace to {during}. Free some space and "
-            "retry; nothing partial was left behind.",
+            f"There is not enough space in the workspace to {during}. Free some space and retry.",
         )
 
     if exc.errno in {errno.EACCES, errno.EPERM, errno.EROFS}:
@@ -107,7 +106,8 @@ class Workspace:
         # Bytes are what matters: PATH_MAX is 4096 *bytes* on Linux, so 924 characters of
         # emoji is 3624 bytes and would be refused by the kernel after passing a character
         # count. Both checks run before `strip()` copies the string and `set()` scans it.
-        raw = str(relative)
+        # A string is measured as given; only a path object needs converting first.
+        raw = relative if isinstance(relative, str) else str(relative)
         if len(raw) > MAX_PATH_LENGTH:
             raise PathJailError(
                 f"The destination path is longer than {MAX_PATH_LENGTH} characters, which "

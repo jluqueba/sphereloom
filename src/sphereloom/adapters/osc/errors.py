@@ -112,8 +112,11 @@ def _extract_error(payload: Any) -> dict[str, Any] | None:
     # Some responses report the failure through `state` with the detail alongside.
     if payload.get("state") == "error":
         nested = payload.get("results")
-        if isinstance(nested, dict) and isinstance(nested.get("error"), dict):
-            return dict(nested["error"])
+        nested_error = nested.get("error") if isinstance(nested, dict) else None
+        if isinstance(nested_error, dict):
+            # Returned as-is, not copied: `dict(...)` would materialise every entry of a
+            # device-supplied object before `bounded_payload` gets the chance to bound it.
+            return nested_error
 
     return None
 
