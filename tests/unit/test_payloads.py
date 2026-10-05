@@ -246,3 +246,25 @@ def test_whitespace_collapsing_does_not_materialise_the_whole_string() -> None:
 def test_whitespace_collapsing_matches_the_obvious_implementation(raw: str, expected: str) -> None:
     """The fast path must not change behaviour, only the work done to get there."""
     assert bounded_text(raw, 200) == expected
+
+
+def test_an_all_whitespace_value_does_not_cost_its_full_length() -> None:
+    """Bounding the output does not bound the work: whitespace produces no output.
+
+    Without a scan budget this field is walked in full however short the limit is.
+    """
+    blank = " " * 50_000_000
+
+    started = time.monotonic()
+    result = bounded_text(blank, 64)
+    elapsed = time.monotonic() - started
+
+    assert len(result) <= 65
+    assert elapsed < 1.0
+
+
+def test_a_value_padded_past_the_scan_budget_is_marked_as_truncated() -> None:
+    """The caller must be able to tell that something was dropped."""
+    padded = " " * 10_000 + "visible"
+
+    assert bounded_text(padded, 64) == ELLIPSIS

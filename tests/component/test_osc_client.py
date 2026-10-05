@@ -35,6 +35,7 @@ from sphereloom.domain.errors import (
     NotConnectedError,
     NotFoundError,
     OperationTimeoutError,
+    SphereLoomError,
     StorageFullError,
 )
 
@@ -243,11 +244,12 @@ async def test_idempotent_requests_recover_from_a_transient_failure() -> None:
     assert payload["state"] == "done"
 
 
-async def test_a_capture_is_never_retried() -> None:
-    """Repeating takePicture could take a second photograph.
+async def test_a_capture_is_not_repeated_after_a_server_error() -> None:
+    """A completed 5xx reached the camera, so repeating takePicture could take a second photo.
 
-    The client decides this from the command name, so no call site can opt a capture into
-    retries by passing the wrong argument.
+    The name is deliberately narrow. A capture *is* retried when the request provably never
+    left the host, which is the separate setup-failure budget; claiming a capture is never
+    retried would contradict a guarantee the suite requires elsewhere.
     """
     camera = FakeCamera(scenario=scenarios.FLAKY)
     with run_fake_camera(camera) as base_url:
@@ -793,18 +795,24 @@ async def test_a_polling_failure_after_a_capture_is_not_retryable() -> None:
     """The poll is harmless to repeat; the capture it is polling is not.
 
     Letting the poll's own verdict through would invite a duplicate of an operation the
-    camera has already accepted.
+    camera has already accepted. The poll must actually fail for this to mean anything: a
+    deadline expiring instead produces a timeout that is hardcoded non-retryable, which
+    would pass this assertion without the override ever running.
     """
-    camera = FakeCamera(capture_polls=10_000)
+    camera = FakeCamera(
+        capture_polls=10_000,
+        scenario=scenarios.Scenario(failing_paths=frozenset({"/osc/commands/status"})),
+    )
     with run_fake_camera(camera) as base_url:
         http = OscHttpClient(base_url)
         runner = CommandRunner(http)
         try:
-            with pytest.raises(OperationTimeoutError) as caught:
-                await runner.run("camera.takePicture", deadline_seconds=0.3)
+            with pytest.raises(SphereLoomError) as caught:
+                await runner.run("camera.takePicture", deadline_seconds=30)
         finally:
             await http.aclose()
 
+    assert not isinstance(caught.value, OperationTimeoutError)
     assert caught.value.retryable is False
 
 
@@ -844,15 +852,35 @@ async def test_a_timed_out_capture_is_not_retried() -> None:
 
 
 async def test_a_connection_failure_is_retried_because_nothing_was_sent() -> None:
-    """A connect failure is unambiguous: the camera never saw the request."""
-    camera = FakeCamera(scenario=scenarios.FLAKY)
+    """A connect failure is unambiguous: the camera never saw the request.
+
+    The failure is injected at the transport. Using a scenario that answers HTTP 503 would
+    exercise the completed-response path instead, and this test would stay green even if
+    connection retries regressed entirely.
+    """
+    attempts = 0
+
+    class RefusingTwice(httpx.AsyncBaseTransport):
+        def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+            self._inner = inner
+
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            nonlocal attempts
+            attempts += 1
+            if attempts <= 2:
+                message = "connection refused"
+                raise httpx.ConnectError(message, request=request)
+            return await self._inner.handle_async_request(request)
+
+    camera = FakeCamera()
     with run_fake_camera(camera) as base_url:
-        http = OscHttpClient(base_url)
+        http = OscHttpClient(base_url, transport=RefusingTwice(httpx.AsyncHTTPTransport()))
         try:
             payload = await http.execute("camera.getOptions")
         finally:
             await http.aclose()
 
+    assert attempts == 3
     assert payload["state"] == "done"
 
 
@@ -922,7 +950,7 @@ async def test_a_deadline_is_not_exceeded_by_a_slow_poll() -> None:
     """Checking the deadline only before sleeping makes it advisory.
 
     A poll can consume its own HTTP timeout on top of an exhausted budget, so the deadline
-    is bounded around the poll and rechecked after it.
+    is bounded around the poll.
     """
     stuck = FakeCamera(capture_polls=10_000, scenario=scenarios.Scenario(latency_seconds=0.4))
     with run_fake_camera(stuck) as base_url:
@@ -1051,3 +1079,86 @@ async def test_a_non_string_file_url_is_mapped_to_the_taxonomy(value: Any) -> No
             http._validated_url(value)
     finally:
         await http.aclose()
+
+
+async def test_a_poll_that_answers_past_the_deadline_is_not_accepted() -> None:
+    """A poll that returns `done` just after the budget ran out must not be honoured.
+
+    Bounding the wait is not enough on its own: `asyncio.wait_for` only fails when the poll
+    is still outstanding. A poll that answers inside its budget, but after the deadline has
+    passed, reaches the recheck instead. Time is injected so the moment is exact rather
+    than raced.
+    """
+
+    class JumpsPastTheDeadline:
+        """Reports no elapsed time until the poll has answered, then jumps past any budget.
+
+        The runner reads the clock four times before the poll returns: once to anchor
+        `started`, once at the top of the loop, once to bound the sleep and once to size the
+        poll budget. Jumping earlier would trip one of those checks instead of the recheck.
+        """
+
+        def __init__(self) -> None:
+            self._calls = 0
+
+        def elapsed(self) -> float:
+            self._calls += 1
+            return 0.0 if self._calls <= 4 else 999.0
+
+    camera = FakeCamera(capture_polls=0)
+    with run_fake_camera(camera) as base_url:
+        http = OscHttpClient(base_url)
+        runner = CommandRunner(http, monotonic=JumpsPastTheDeadline())
+        try:
+            with pytest.raises(OperationTimeoutError):
+                await runner.run("camera.takePicture", deadline_seconds=30)
+        finally:
+            await http.aclose()
+
+
+async def test_a_vendor_error_reported_during_polling_is_mapped(
+    runner: CommandRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A command can be accepted and then fail. The failure arrives from the poll, not the
+    acknowledgement, and must reach the taxonomy like any other vendor error."""
+
+    async def accepted(*args: object, **kwargs: object) -> dict[str, object]:
+        return {"name": "camera.takePicture", "state": "inProgress", "id": "cmd-1"}
+
+    async def failed(*args: object, **kwargs: object) -> dict[str, object]:
+        return {
+            "name": "camera.takePicture",
+            "state": "error",
+            "error": {"code": "disabledCommand", "message": "The card is write protected."},
+        }
+
+    monkeypatch.setattr(runner._client, "execute", accepted)
+    monkeypatch.setattr(runner._client, "command_status", failed)
+
+    with pytest.raises(SphereLoomError) as caught:
+        await runner.run("camera.takePicture", deadline_seconds=5)
+
+    vendor = caught.value.details["vendor"]
+    assert isinstance(vendor, dict)
+    error = vendor["error"]
+    assert isinstance(error, dict)
+    assert error["code"] == "disabledCommand"
+
+
+async def test_an_unrecognised_state_during_polling_is_not_polled_forever(
+    runner: CommandRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Looping on a state the client does not understand is worse than refusing it: the
+    command would be polled until the deadline with no prospect of a usable answer."""
+
+    async def accepted(*args: object, **kwargs: object) -> dict[str, object]:
+        return {"name": "camera.takePicture", "state": "inProgress", "id": "cmd-1"}
+
+    async def nonsense(*args: object, **kwargs: object) -> dict[str, object]:
+        return {"name": "camera.takePicture", "state": "somethingElse"}
+
+    monkeypatch.setattr(runner._client, "execute", accepted)
+    monkeypatch.setattr(runner._client, "command_status", nonsense)
+
+    with pytest.raises(InternalError):
+        await runner.run("camera.takePicture", deadline_seconds=5)

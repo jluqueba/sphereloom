@@ -40,6 +40,11 @@ MAX_NODES = 200
 #: digits, so an unbounded value would make serialisation fail instead of producing output.
 MAX_INT_BITS = 4096
 
+#: How many raw characters may be scanned per character of output when collapsing
+#: whitespace. Bounding the output alone does not bound the work: whitespace produces no
+#: output, so a field of nothing but spaces would be scanned in full whatever the limit.
+MAX_SCAN_MULTIPLE = 16
+
 #: Stands in for anything that was removed, truncated or could not be represented.
 ELLIPSIS = "…"
 MALFORMED = "[malformed]"
@@ -105,19 +110,26 @@ def _truncate(text: str, limit: int) -> str:
 
 
 def _collapse_whitespace(value: str, limit: int) -> str:
-    """Collapse runs of whitespace, stopping once `limit` characters are settled.
+    """Collapse runs of whitespace, stopping once the output or the scan budget is spent.
 
     `" ".join(value.split())` would materialise every token of the string and then a full
     normalised copy, all before the limit applies: eight megabytes of short words becomes
-    millions of Python objects on an error path. Walking the string and stopping early
-    bounds the work as well as the result.
+    millions of Python objects on an error path.
+
+    Two budgets are needed, not one. Stopping when the output is full bounds the result but
+    not the work, because whitespace produces no output: a field of nothing but spaces is
+    scanned in full however short the limit. The scan budget bounds the work itself.
 
     One character beyond the limit is kept so the caller can still tell whether the value
     was truncated.
     """
+    scan_budget = limit * MAX_SCAN_MULTIPLE
     out: list[str] = []
     pending_space = False
-    for char in value:
+    for index, char in enumerate(value):
+        if index >= scan_budget:
+            out.append(ELLIPSIS)
+            break
         if char.isspace():
             # Leading whitespace produces no separator, matching `split()`.
             pending_space = bool(out)

@@ -1,18 +1,25 @@
-"""Progress reporting from device-supplied payloads.
+"""Validating device-supplied values before they reach domain code.
 
-A camera reports capture progress as a number it chooses. That number reaches a log record,
-so anything the JSON encoder cannot render would corrupt the line it appears on.
+A camera chooses what it sends. Progress numbers reach log records, so anything the JSON
+encoder cannot render would corrupt the line; identifiers and deadlines reach validators,
+which must answer with the error taxonomy rather than an exception of their own.
 """
 
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import pytest
 
-from sphereloom.adapters.osc.commands import _completion, _results
-from sphereloom.domain.errors import InternalError
+from sphereloom.adapters.osc.commands import (
+    _completion,
+    _results,
+    _validated_command_id,
+    _validated_deadline,
+)
+from sphereloom.domain.errors import InternalError, InvalidArgumentError
 
 
 @pytest.mark.parametrize(
@@ -94,3 +101,60 @@ def test_an_oversized_integer_completion_does_not_raise() -> None:
 def test_a_completion_outside_the_documented_range_is_dropped(value: Any) -> None:
     """OSC defines completion as 0..1, so anything else is not a progress report."""
     assert _completion({"progress": {"completion": value}}) is None
+
+
+# ---------------------------------------------------------------- validator robustness
+
+
+def test_an_enormous_padded_command_id_is_rejected_without_being_normalised() -> None:
+    """`strip()` copies the whole string, so the bound must be checked on the raw value."""
+    padded = " " * 50_000_000 + "abc"
+
+    started = time.monotonic()
+    assert _validated_command_id(padded) is None
+    assert time.monotonic() - started < 1.0
+
+
+@pytest.mark.parametrize(
+    "value",
+    [10**400, -(10**400), 10**5000, -(10**5000)],
+    # Explicit ids because pytest renders a parameter with `repr()`, which raises for an
+    # integer this wide -- the same hazard the values are here to test.
+    ids=["10**400", "-10**400", "10**5000", "-10**5000"],
+)
+def test_an_oversized_integer_deadline_stays_inside_the_taxonomy(value: int) -> None:
+    """`math.isfinite` converts to float first and raises OverflowError on a large int.
+
+    Above 4300 digits `repr()` raises too, so a message built with `!r` would throw a bare
+    ValueError out of the handler that exists to prevent exactly that.
+    """
+    with pytest.raises(InvalidArgumentError):
+        _validated_deadline(value)
+
+
+def test_a_rejected_deadline_does_not_carry_an_unbounded_message() -> None:
+    """The message reaches the wire envelope, so it must not copy the input verbatim."""
+    oversized: Any = "x" * 5_000_000
+
+    with pytest.raises(InvalidArgumentError) as caught:
+        _validated_deadline(oversized)
+
+    assert len(caught.value.message) < 1000
+
+
+@pytest.mark.parametrize("value", [True, False, "5", None, [5]])
+def test_a_deadline_that_is_not_a_number_is_rejected(value: Any) -> None:
+    """`True` is an `int`, so without an explicit check it becomes a one-second deadline."""
+    with pytest.raises(InvalidArgumentError):
+        _validated_deadline(value)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -1.0])
+def test_an_unusable_deadline_is_rejected(value: float) -> None:
+    with pytest.raises(InvalidArgumentError):
+        _validated_deadline(value)
+
+
+@pytest.mark.parametrize("value", [0, 0.5, 30, 3600.0])
+def test_a_usable_deadline_is_accepted(value: float) -> None:
+    assert _validated_deadline(value) == value

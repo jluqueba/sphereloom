@@ -26,6 +26,7 @@ from sphereloom.domain.errors import (
     OperationTimeoutError,
     SphereLoomError,
 )
+from sphereloom.domain.payloads import bounded_text
 from sphereloom.logging import get_logger
 
 logger = get_logger("adapters.osc.commands")
@@ -214,8 +215,12 @@ def _validated_command_id(value: Any) -> str | None:
     """
     if not isinstance(value, str):
         return None
+    # Length is checked on the raw value: `strip()` copies the whole string first, so an
+    # enormous whitespace-padded identifier would be normalised before the bound applies.
+    if len(value) > COMMAND_ID_MAX_LENGTH:
+        return None
     candidate = value.strip()
-    if not candidate or len(candidate) > COMMAND_ID_MAX_LENGTH:
+    if not candidate:
         return None
     return candidate
 
@@ -236,13 +241,36 @@ def _validated_deadline(seconds: float) -> float:
 
     Non-finite values are refused explicitly: NaN defeats every elapsed-time comparison and
     would reach `asyncio.sleep`, while infinity silently removes the deadline this class
-    exists to enforce.
+    exists to enforce. Booleans are refused because `True` is an `int` and would otherwise
+    be accepted as a one-second deadline.
+
+    Every message renders the offending value through `bounded_text` rather than `!r`.
+    `repr()` is neither bounded nor total on untrusted input: it copies a long string
+    verbatim into a message that reaches the wire envelope, and it raises for an integer
+    wider than 4300 digits -- which is exactly the input the overflow guard below exists to
+    catch, so `!r` would throw a bare ValueError out of the handler meant to prevent one.
     """
-    if not math.isfinite(seconds):
-        message = f"A command deadline must be a finite number of seconds, got {seconds!r}."
+    if isinstance(seconds, bool) or not isinstance(seconds, int | float):
+        message = f"A command deadline must be a number of seconds, got {bounded_text(seconds)}."
+        raise InvalidArgumentError(message, backend=BACKEND)
+
+    try:
+        finite = math.isfinite(seconds)
+    except (OverflowError, ValueError) as exc:
+        # `math.isfinite` converts to float first, which raises for an integer too large
+        # to represent. A validator must not leak an exception outside the taxonomy.
+        message = (
+            f"A command deadline must be a usable number of seconds, got {bounded_text(seconds)}."
+        )
+        raise InvalidArgumentError(message, backend=BACKEND) from exc
+
+    if not finite:
+        message = (
+            f"A command deadline must be a finite number of seconds, got {bounded_text(seconds)}."
+        )
         raise InvalidArgumentError(message, backend=BACKEND)
     if seconds < 0:
-        message = f"A command deadline cannot be negative, got {seconds!r}."
+        message = f"A command deadline cannot be negative, got {bounded_text(seconds)}."
         raise InvalidArgumentError(message, backend=BACKEND)
     return seconds
 
