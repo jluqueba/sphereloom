@@ -194,7 +194,12 @@ def test_the_result_serialises_under_strict_json(payload: Any) -> None:
 
 def test_an_integer_is_truncated_like_any_other_scalar() -> None:
     """The limit was a no-op for numbers, so a long integer ignored its bound."""
-    assert len(bounded_text(10**4000, 64)) <= 65
+    # Representable but 201 digits long, so this fails if numeric truncation regresses.
+    # A wider value would return MALFORMED and pass a length assertion without truncating.
+    result = bounded_text(10**200, 64)
+
+    assert result.endswith(ELLIPSIS)
+    assert result == str(10**200)[:64] + ELLIPSIS
 
 
 def test_an_unrenderable_integer_does_not_raise() -> None:

@@ -249,8 +249,9 @@ def _request_json(client: httpx.Client, method: str, url: str, **kwargs: Any) ->
     """
     with client.stream(method, url, **kwargs) as response:
         if not response.is_success:
-            # The body has to be read before `raise_for_status` can describe the failure.
-            response.read()
+            # Raised without reading the body: an error response is as untrusted as any
+            # other, and buffering it would bypass the bound below. The context manager
+            # closes the connection.
             response.raise_for_status()
 
         chunks: list[bytes] = []
