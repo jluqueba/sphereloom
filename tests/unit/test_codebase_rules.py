@@ -309,6 +309,10 @@ def test_defaulting_uses_is_none_rather_than_or() -> None:
     Every `or` whose value is used is considered, not only those in an assignment:
     `return x or default`, `d.get(k) or default` and `f(timeout=x or 5)` are the same
     defect. An `or` that is only tested for truth is boolean logic and is left alone.
+
+    Scope: the right-hand side must be a literal, a container display or a call, which is
+    what a supplied default looks like. A choice between two existing values, such as
+    `command or path`, is not checked.
     """
     offenders: list[str] = []
 

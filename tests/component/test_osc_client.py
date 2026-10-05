@@ -1320,3 +1320,81 @@ async def test_a_4xx_from_state_is_an_error() -> None:
             await http.state()
     finally:
         await http.aclose()
+
+
+# ---------------------------------------------------------------- closing a response
+
+
+class _FailsToClose(httpx.AsyncByteStream):
+    """A body that streams normally and then fails as its connection is released."""
+
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield self._data
+
+    async def aclose(self) -> None:
+        raise httpx.ReadError("connection reset while closing")
+
+
+async def test_a_failure_to_close_at_the_end_of_a_body_stays_in_the_taxonomy() -> None:
+    """httpx closes a stream when it is read to the end, inside the read.
+
+    A failure there is a transport failure like any other and must not escape as a raw
+    httpx exception.
+    """
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, stream=_FailsToClose(b'{"batteryLevel": 0.5}'))
+    )
+    http = OscHttpClient("http://192.168.42.1", transport=transport)
+    try:
+        with pytest.raises(NotConnectedError):
+            await http.state()
+    finally:
+        await http.aclose()
+
+
+async def test_a_failure_to_close_does_not_replace_the_real_error() -> None:
+    """Raised from a `finally`, a close failure replaced the error already on its way out."""
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, stream=_FailsToClose(b"{}"), headers={"Content-Encoding": "gzip"}
+        )
+    )
+    http = OscHttpClient("http://192.168.42.1", transport=transport)
+    try:
+        with pytest.raises(InternalError, match="compressed"):
+            await http.state()
+    finally:
+        await http.aclose()
+
+
+async def test_a_failure_to_close_a_download_stays_in_the_taxonomy() -> None:
+    """The download is reported as interrupted, so its consumer discards it and retries."""
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, stream=_FailsToClose(b"file bytes"))
+    )
+    http = OscHttpClient("http://192.168.42.1", transport=transport)
+
+    async def consume() -> None:
+        async with http.stream("/DCIM/Camera01/IMG_0001.jpg") as response:
+            async for _ in response.aiter_bytes():
+                pass
+
+    try:
+        with pytest.raises(NotConnectedError):
+            await consume()
+    finally:
+        await http.aclose()
+
+
+async def test_an_enormous_off_origin_host_is_bounded_in_the_error(client: OscHttpClient) -> None:
+    """The host comes from the camera, and an error envelope must not carry it unbounded."""
+    host = "a." * 20_000 + "example"
+
+    with pytest.raises(InternalError) as caught:
+        async with client.stream(f"http://{host}/IMG_0001.jpg"):
+            pass  # pragma: no cover - the context manager raises on entry
+
+    assert len(str(caught.value.details["received_host"])) <= 256

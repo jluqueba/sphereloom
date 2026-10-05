@@ -30,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import random
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from typing import Any
 
@@ -369,7 +369,7 @@ class OscHttpClient:
                 retryable=True,
             ) from exc
         finally:
-            await response.aclose()
+            await _close_response(response)
 
     def _validated_url(self, url: str) -> str:
         """Confine a camera-supplied URL to the camera's own origin.
@@ -408,7 +408,11 @@ class OscHttpClient:
                 "The camera supplied a file URL pointing somewhere other than the camera "
                 "itself. SphereLoom refuses to follow it.",
                 backend=BACKEND,
-                details={"expected_host": base.host, "received_host": candidate.host},
+                # The received host comes from the camera and has no length of its own.
+                details={
+                    "expected_host": base.host,
+                    "received_host": bounded_text(candidate.host, 255),
+                },
             )
         return url
 
@@ -454,7 +458,7 @@ class OscHttpClient:
         try:
             body = await self._read_bounded(response, command=command)
         finally:
-            await response.aclose()
+            await _close_response(response)
         return response, body
 
     async def _read_bounded(self, response: httpx.Response, *, command: str | None) -> bytes:
@@ -638,6 +642,20 @@ class OscHttpClient:
             )
 
         return payload
+
+
+async def _close_response(response: httpx.Response) -> None:
+    """Release a response's connection without letting the release replace the outcome.
+
+    This runs in a `finally`, where the outcome is already settled: a failure may be on its
+    way out, or the caller may have stopped reading early. A transport error raised here
+    would escape as a raw httpx exception and replace whatever was in flight, so it is
+    dropped. A body read to its end is closed by httpx inside the read, where a failure to
+    close is mapped to the taxonomy like any other transport failure; this covers the
+    paths that never reach the end.
+    """
+    with suppress(httpx.HTTPError):
+        await response.aclose()
 
 
 def _refuse_encoded_body(response: httpx.Response, *, command: str | None) -> None:
