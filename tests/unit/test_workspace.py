@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import sys
 import tempfile
 import time
@@ -9,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from sphereloom.domain.errors import PathJailError
+from sphereloom.domain.errors import PathJailError, PermissionDeniedError, StorageFullError
 from sphereloom.security.workspace import (
     MAX_COMPONENT_BYTES,
     MAX_PATH_LENGTH,
@@ -315,3 +316,49 @@ def test_the_workspace_root_itself_is_not_a_destination(workspace: Workspace, na
     """
     with pytest.raises(PathJailError, match="not the workspace directory itself"):
         workspace.resolve(name)
+
+
+@pytest.mark.parametrize(
+    ("number", "expected"),
+    [
+        (errno.ENOSPC, StorageFullError),
+        (errno.EDQUOT, StorageFullError),
+        (errno.EACCES, PermissionDeniedError),
+        (errno.EPERM, PermissionDeniedError),
+        (errno.EROFS, PermissionDeniedError),
+        (errno.EINVAL, PathJailError),
+        (errno.ENAMETOOLONG, PathJailError),
+    ],
+)
+@pytest.mark.parametrize("failing_call", ["mkdir", "mkstemp", "replace"])
+def test_a_filesystem_failure_keeps_its_own_taxonomy(
+    workspace: Workspace,
+    monkeypatch: pytest.MonkeyPatch,
+    failing_call: str,
+    number: int,
+    expected: type[Exception],
+) -> None:
+    """Translating every OSError to a path error told a caller with a full disk to rename.
+
+    The cause is what distinguishes them, and all three operating-system touchpoints share
+    one mapping so they cannot diverge.
+    """
+
+    def refuse(*args: object, **kwargs: object) -> object:
+        raise OSError(number, "refused")
+
+    if failing_call == "mkdir":
+        monkeypatch.setattr(Path, "mkdir", refuse)
+    elif failing_call == "mkstemp":
+        monkeypatch.setattr(tempfile, "mkstemp", refuse)
+    else:
+        monkeypatch.setattr(Path, "replace", refuse)
+
+    with (
+        pytest.raises(expected),
+        workspace.atomic_write("downloads/clip.insv") as (
+            temp_path,
+            _destination,
+        ),
+    ):
+        temp_path.write_bytes(b"data")

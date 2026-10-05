@@ -11,13 +11,19 @@ is what makes the symlink case work.
 
 from __future__ import annotations
 
+import errno
 import os
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from pathlib import Path, PurePath
 
-from sphereloom.domain.errors import PathJailError
+from sphereloom.domain.errors import (
+    PathJailError,
+    PermissionDeniedError,
+    SphereLoomError,
+    StorageFullError,
+)
 
 #: Characters that are illegal in Windows filenames and meaningless in POSIX ones. Rejecting
 #: them everywhere keeps behaviour identical across platforms.
@@ -42,6 +48,33 @@ MAX_COMPONENT_BYTES = 255
 #: temporary file is named, and that failure arrives from the kernel partway through a
 #: download instead of as the PathJailError this class promises.
 TEMP_NAME_OVERHEAD = 18
+
+
+def _translate_os_error(exc: OSError, *, during: str) -> SphereLoomError:
+    """Map a filesystem refusal to the taxonomy entry that matches its cause.
+
+    Translating every `OSError` to a path error was itself a defect: a full disk told the
+    caller to rename the file, which is useless advice and hides a condition the taxonomy
+    already has a code for. The errno is what distinguishes them, and all three operating
+    -system touchpoints go through here so the mapping cannot diverge between them.
+    """
+    if exc.errno in {errno.ENOSPC, errno.EDQUOT}:
+        return StorageFullError(
+            f"There is not enough space in the workspace to {during}. Free some space and "
+            "retry; nothing partial was left behind.",
+        )
+
+    if exc.errno in {errno.EACCES, errno.EPERM, errno.EROFS}:
+        return PermissionDeniedError(
+            f"SphereLoom is not allowed to {during} in the workspace directory. Check the "
+            "permissions on the configured workspace.",
+        )
+
+    return PathJailError(
+        f"The destination path was refused by the filesystem while trying to {during}. Use "
+        "a name made of letters, digits, dots, dashes and underscores, without trailing "
+        "spaces or dots.",
+    )
 
 
 class Workspace:
@@ -197,11 +230,11 @@ class Workspace:
             )
 
         # Creating the directory and the temporary file are the two places where the
-        # operating system gets the final say. Validation cannot anticipate every rule a
-        # filesystem enforces -- Windows silently strips a trailing space or dot from a
-        # directory name, and rejects a tab outright -- so a refusal here is translated
-        # rather than enumerated. Without this the caller sees a raw OSError from inside a
-        # download instead of the PathJailError this class promises.
+        # operating system gets the final say before any data is written. Validation cannot
+        # anticipate every rule a filesystem enforces -- Windows silently strips a trailing
+        # space or dot from a directory name, and rejects a tab outright -- so a refusal is
+        # translated rather than enumerated, and translated by cause: a full disk is not a
+        # bad path and must not be reported as one.
         try:
             destination.parent.mkdir(parents=True, exist_ok=True)
 
@@ -211,11 +244,7 @@ class Workspace:
                 suffix=".partial",
             )
         except OSError as exc:
-            raise PathJailError(
-                "The destination path was refused by the filesystem. Use a name made of "
-                "letters, digits, dots, dashes and underscores, without trailing spaces "
-                "or dots.",
-            ) from exc
+            raise _translate_os_error(exc, during="create the download file") from exc
 
         os.close(handle)
         temp_path = Path(temp_name)
@@ -223,12 +252,12 @@ class Workspace:
             yield temp_path, destination
             # The rename is the third place the operating system gets the final say, and
             # guarding only the first two moved the failure here rather than removing it.
+            # It can still run out of space: a rename allocates directory metadata.
             try:
                 temp_path.replace(destination)
             except OSError as exc:
-                raise PathJailError(
-                    "The destination path was refused by the filesystem when the download "
-                    "was moved into place. Nothing partial was left behind.",
+                raise _translate_os_error(
+                    exc, during="move the completed download into place"
                 ) from exc
         except BaseException:
             # Every exit that is not a clean completion must remove the partial file,
