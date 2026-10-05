@@ -642,6 +642,15 @@ class FakeCamera:
             return self._vendor_error(
                 "camera.getOptions", "invalidParameterValue", "optionNames must be a list."
             )
+        elif not all(isinstance(name, str) for name in requested):
+            # Checking only that it is a list still lets `[{"x": 1}]` through, and a
+            # dictionary is unhashable, so the membership test below would raise TypeError
+            # and the fake would answer 500 instead of the vendor error it means to.
+            return self._vendor_error(
+                "camera.getOptions",
+                "invalidParameterValue",
+                "optionNames must contain only strings.",
+            )
         available: dict[str, Any] = {
             "captureMode": self.state.capture_mode,
             "captureModeSupport": list(SUPPORTED_CAPTURE_MODES),

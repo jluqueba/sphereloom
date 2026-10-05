@@ -66,14 +66,21 @@ class Workspace:
             PathJailError: if the input is absolute, contains forbidden characters, or
                 resolves outside the workspace root.
         """
-        # Length is checked on the raw value, before `strip()` copies it and `set()` scans
-        # every character. The argument comes from a tool call, so doing either first means
-        # an enormous string costs that work before the limit it violates is applied.
+        # Two stages, because the first is free. A character count is never greater than
+        # the byte count, so anything longer than the limit in characters is certainly over
+        # it in bytes and can be refused without encoding at all. Only a plausible path --
+        # at most MAX_PATH_LENGTH characters -- is then encoded to be measured properly.
         #
-        # Measured in UTF-8 bytes, not characters, because that is what the limit protects
-        # against: PATH_MAX is 4096 *bytes* on Linux, so 924 characters of emoji is 3624
-        # bytes and would be refused by the kernel after passing a character count.
+        # Bytes are what matters: PATH_MAX is 4096 *bytes* on Linux, so 924 characters of
+        # emoji is 3624 bytes and would be refused by the kernel after passing a character
+        # count. Both checks run before `strip()` copies the string and `set()` scans it.
         raw = str(relative)
+        if len(raw) > MAX_PATH_LENGTH:
+            raise PathJailError(
+                f"The destination path is longer than {MAX_PATH_LENGTH} characters, which "
+                "is more than this server accepts. Use a shorter name.",
+            )
+
         try:
             raw_bytes = len(raw.encode("utf-8"))
         except UnicodeEncodeError as exc:

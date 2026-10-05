@@ -729,3 +729,21 @@ def test_deleting_the_same_file_twice_in_one_call_succeeds(client: httpx.Client)
     body = _execute(client, "camera.delete", fileUrls=[url, url])
 
     assert body["state"] == "done"
+
+
+@pytest.mark.parametrize("entries", [[{"x": 1}], [["nested"]], [1], [None], ["ok", {"x": 1}]])
+def test_option_names_containing_a_non_string_is_a_vendor_error(
+    client: httpx.Client, entries: list[object]
+) -> None:
+    """A dictionary is unhashable, so membership testing it raises rather than returns False.
+
+    Checking only that `optionNames` is a list let that reach the comprehension and the
+    fake answered 500 instead of the vendor error it means to.
+    """
+    response = client.post(
+        "/osc/commands/execute",
+        json={"name": "camera.getOptions", "parameters": {"optionNames": entries}},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["error"]["code"] == "invalidParameterValue"

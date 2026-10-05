@@ -152,8 +152,7 @@
 
 ## Testing
 
-- Unit and component tests must run without real hardware.
-- Use a fake OSC camera HTTP stub as the default backend in tests.
+- Unit and component tests must run without real hardware.- Use a fake OSC camera HTTP stub as the default backend in tests.
 - Real-camera tests must be optional and marker-gated.
 - Real-camera tests require an explicit environment variable.
 - Real-camera tests must not run in CI by default.
@@ -162,6 +161,9 @@
 - Every error taxonomy code must have at least one test.
 - Include tests for capability checks and unsupported responses.
 - Include tests for path jail enforcement and redaction behavior when implementing those features.
+- Never assert a platform's own behaviour. CI runs Ubuntu and Windows, and a filename a tab makes illegal on one is legal on the other. Inject the failure instead of provoking it, so the test asserts the guarantee rather than the quirk; gate with `skipif` only when injection is impossible.
+- Run the suite on Linux as well as Windows before pushing; CI runs both.
+- Choose a timing threshold by measuring both the fixed and the regressed cost, and record both in the docstring. A threshold a regression would still pass under is decoration.
 
 ## Documentation
 
@@ -209,9 +211,9 @@ Findings are reported in two different places, and reading only one of them hide
 - **Inline threads** carry the findings attached to changed lines: `gh api repos/<owner>/<repo>/pulls/<n>/comments`.
 - **The review body** carries the overview and two sections that appear nowhere else: the **severity counts** (`Findings: 1 High`), and **"Previously missed (n)"**, which lists findings in code that has not changed since the last review. Read it with `gh api repos/<owner>/<repo>/pulls/<n>/reviews`, taking the `body` of the most recent review.
 - Never filter findings by `created_at > last push`. That filter cannot by construction show an older finding that is still outstanding, which is exactly what "previously missed" means.
-- In the REST API the reviewer's login is `Copilot`; in GraphQL the same account is `copilot-pull-request-reviewer`. A filter written for one returns nothing against the other.
+- The reviewer appears under three logins: `copilot-pull-request-reviewer[bot]` in `/pulls/N/reviews`, `Copilot` in `/pulls/N/comments`, and `copilot-pull-request-reviewer` in GraphQL. Match the set exactly; a filter written for one returns nothing against another.
 - Thread resolution state is only available through GraphQL (`reviewThreads { isResolved }`), not REST.
-- Run `.\scripts\review_status.ps1 -PullRequest <n>`, which reads both places and exits non-zero while anything is outstanding.
+- Treat an unreadable answer as not clean: a check that cannot read its input must never report success.
 - Compare review and comment timestamps against the last push to prove a cycle ran after the change, but use timestamps to establish *which cycle is current*, never to decide which findings still need work.
 - Resolve review threads only after the findings are actually addressed, never to unblock a merge.
 - Automated review cannot read `docs/internal/**` because it is encrypted; those changes need a maintainer with the key.

@@ -87,6 +87,15 @@ Before opening a PR, make sure:
 - No Insta360 SDK binaries were committed.
 - The PR title follows Conventional Commits.
 - A **milestone** is set, and at least one `area:` label plus a type label.
+- The suite passes on **both** operating systems in the CI matrix.
+
+### Run the suite on Linux before pushing
+
+CI runs on Ubuntu and Windows. Developing on one of them alone has already sent a red build: a test asserted that a tab in a filename is refused, which is true on Windows and false on Linux, so it passed locally and failed in CI.
+
+Run the suite under WSL Ubuntu, or any Linux with the project's Python, before pushing.
+
+When a behaviour genuinely differs between platforms, do not encode one platform's answer in an assertion. Either gate the test with `@pytest.mark.skipif(sys.platform == ...)`, or — better — inject the failure instead of provoking it, so the test asserts the guarantee rather than the quirk. `test_a_refusal_from_the_operating_system_becomes_a_path_jail_error` patches `mkdir`, `mkstemp` and `replace` to raise, which tests all three translations on every platform.
 
 The repository uses a single required status check named `ci-gate`. The CI design uses change detection so documentation-only PRs can skip heavy jobs while the required gate still reports success. PRs are squash-merged using the PR title.
 
@@ -128,15 +137,9 @@ Reading only the inline comments hides part of the review. This has happened in 
 Two traps worth knowing:
 
 - **Do not filter findings by "created after my last push."** That filter cannot, by construction, show an older finding that is still outstanding — which is precisely what "previously missed" means. Use timestamps only to identify which cycle is the current one.
-- **The reviewer has two different logins.** It is `Copilot` in the REST API and `copilot-pull-request-reviewer` in GraphQL. A filter written for one silently returns nothing against the other. Thread resolution state (`isResolved`) is available only through GraphQL.
+- **The reviewer has three different logins.** Verified against this repository: `copilot-pull-request-reviewer[bot]` in `/pulls/N/reviews`, `Copilot` in `/pulls/N/comments`, and `copilot-pull-request-reviewer` in GraphQL. A filter written for one silently returns nothing against another, so match the set exactly rather than with a wildcard. Thread resolution state (`isResolved`) is available only through GraphQL.
 
-Rather than doing this by hand, run:
-
-```powershell
-.\scripts\review_status.ps1 -PullRequest <n>
-```
-
-It reads both places, prints every outstanding finding, and exits non-zero while the review is not clean.
+Rather than doing this by hand, check both places with `gh api`, matching the reviewer logins exactly and treating anything unreadable as not clean.
 
 Note that automated review cannot read `docs/internal/**`, which is encrypted. Changes there are reviewed by a maintainer with the key.
 

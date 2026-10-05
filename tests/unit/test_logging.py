@@ -7,6 +7,7 @@ import logging
 
 import pytest
 
+from sphereloom.domain.payloads import MALFORMED
 from sphereloom.logging import REDACTED, RedactionFilter, configure_logging, redact
 
 
@@ -113,23 +114,28 @@ def test_every_log_line_is_parseable_json(capsys: pytest.CaptureFixture[str]) ->
 def test_a_non_finite_value_does_not_produce_invalid_json(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """`json.dumps` renders NaN bare by default, which no JSON parser accepts."""
+    """`json.dumps` renders NaN bare by default, which no JSON parser accepts.
+
+    Bounding the context replaces it rather than dropping the whole context, so the rest
+    of the record still says what was happening when the bad value arrived.
+    """
     configure_logging(level="INFO", redaction=True)
     logging.getLogger("sphereloom.test").info(
-        "progress", extra={"context": {"completion": float("nan")}}
+        "progress", extra={"context": {"completion": float("nan"), "command": "takePicture"}}
     )
 
     line = capsys.readouterr().err.strip()
     assert "NaN" not in line
     payload = json.loads(line)
     assert payload["message"] == "progress"
-    assert "context_error" in payload
+    assert payload["completion"] == MALFORMED
+    assert payload["command"] == "takePicture"
 
 
 def test_an_unserialisable_value_does_not_lose_the_log_line(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A log record must never fail; the message survives even when the context cannot."""
+    """A log record must never fail; the message survives even when a value cannot."""
 
     class Unserialisable:
         def __repr__(self) -> str:
@@ -137,9 +143,43 @@ def test_an_unserialisable_value_does_not_lose_the_log_line(
 
     configure_logging(level="INFO", redaction=True)
     logging.getLogger("sphereloom.test").info(
-        "kept", extra={"context": {"value": Unserialisable()}}
+        "kept", extra={"context": {"value": Unserialisable(), "command": "listFiles"}}
     )
 
     payload = json.loads(capsys.readouterr().err.strip())
     assert payload["message"] == "kept"
-    assert "context_error" in payload
+    assert payload["value"] == MALFORMED
+    assert payload["command"] == "listFiles"
+
+
+def test_an_enormous_context_value_does_not_produce_an_unbounded_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`default=str` succeeds for an object whose `__str__` returns megabytes.
+
+    Succeeding is the problem: the fallback never runs, so without a bound applied before
+    serialisation the line is as large as the device cares to make it.
+    """
+
+    class Enormous:
+        def __str__(self) -> str:
+            return "x" * 5_000_000
+
+    configure_logging(level="INFO", redaction=True)
+    logging.getLogger("sphereloom.test").info("big", extra={"context": {"blob": Enormous()}})
+
+    line = capsys.readouterr().err.strip()
+
+    assert len(line) < 10_000
+    assert json.loads(line)["message"] == "big"
+
+
+def test_an_enormous_message_is_bounded(capsys: pytest.CaptureFixture[str]) -> None:
+    """Arguments interpolated into a message are as untrusted as any other value."""
+    configure_logging(level="INFO", redaction=True)
+    logging.getLogger("sphereloom.test").info("camera said %s", "y" * 5_000_000)
+
+    line = capsys.readouterr().err.strip()
+
+    assert len(line) < 10_000
+    assert json.loads(line)["message"].startswith("camera said")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -85,7 +86,7 @@ def test_an_absurdly_long_path_is_rejected(workspace: Workspace) -> None:
 
     A clear refusal beats an operating-system error raised halfway through a download.
     """
-    with pytest.raises(PathJailError, match="more than the"):
+    with pytest.raises(PathJailError, match="longer than"):
         workspace.resolve("a" * (MAX_PATH_LENGTH + 1))
 
 
@@ -204,12 +205,17 @@ def test_an_enormous_raw_path_is_rejected_before_it_is_scanned(workspace: Worksp
     """The limit ran after `strip()` copied the string and `set()` scanned every character.
 
     The argument comes from a tool call, so that work happened before the limit it
-    violates applied. The guard is the time taken, not only the error.
+    violates applied. The elapsed time is the only witness: the verdict is the same either
+    way, only the cost of reaching it differs.
+
+    Measured on this input: refusing on the character count is immediate, while the old
+    `strip()` plus `set()` took 0.9 seconds. One second separates them with room for a
+    loaded runner.
     """
     huge = "a" * 50_000_000
 
     started = time.monotonic()
-    with pytest.raises(PathJailError, match="more than the"):
+    with pytest.raises(PathJailError, match="longer than"):
         workspace.resolve(huge)
     elapsed = time.monotonic() - started
 
@@ -247,19 +253,56 @@ def test_a_component_the_filesystem_would_rewrite_is_refused(
         workspace.resolve(name)
 
 
-def test_a_name_the_filesystem_refuses_becomes_a_path_jail_error(
-    workspace: Workspace,
+@pytest.mark.parametrize("failing_call", ["mkdir", "mkstemp", "replace"])
+def test_a_refusal_from_the_operating_system_becomes_a_path_jail_error(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch, failing_call: str
 ) -> None:
     """Validation cannot anticipate every filesystem rule, so a refusal is translated.
 
-    A tab passes `resolve()` and is then rejected by the kernel, which surfaced as a raw
-    OSError from inside a download instead of the PathJailError this class promises.
+    There are three places the operating system gets the final say, and guarding only some
+    of them moves the failure rather than removing it. The refusal is injected rather than
+    provoked with a specific name, because which names a kernel rejects differs by platform:
+    a tab is refused on Windows and perfectly legal on Linux, so a name-based test would
+    assert a platform quirk instead of this guarantee.
     """
-    name = "a\tb/c.jpg"
-    workspace.resolve(name)
+    refused = OSError(22, "Invalid argument")
 
-    with pytest.raises(PathJailError), workspace.atomic_write(name):
-        pass  # pragma: no cover - the context manager raises on entry
+    def refuse(*args: object, **kwargs: object) -> object:
+        raise refused
+
+    if failing_call == "mkdir":
+        monkeypatch.setattr(Path, "mkdir", refuse)
+    elif failing_call == "mkstemp":
+        monkeypatch.setattr(tempfile, "mkstemp", refuse)
+    else:
+        monkeypatch.setattr(Path, "replace", refuse)
+
+    with (
+        pytest.raises(PathJailError),
+        workspace.atomic_write("downloads/clip.insv") as (
+            temp_path,
+            _destination,
+        ),
+    ):
+        temp_path.write_bytes(b"data")
+
+
+def test_a_failed_cleanup_does_not_replace_the_original_failure(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deleting a file another handle still holds raises on Windows.
+
+    If the cleanup were unguarded it would replace the in-flight exception with a raw
+    OSError, losing the reason the download failed in the first place.
+    """
+
+    def refuse_unlink(*args: object, **kwargs: object) -> object:
+        raise OSError(32, "The process cannot access the file")
+
+    monkeypatch.setattr(Path, "unlink", refuse_unlink)
+
+    with pytest.raises(ZeroDivisionError), workspace.atomic_write("downloads/clip.insv"):
+        _ = 1 / 0
 
 
 @pytest.mark.parametrize("name", [".", "./", "downloads/..", "a/../"])

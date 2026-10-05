@@ -17,7 +17,19 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from sphereloom.domain.payloads import bounded_payload, bounded_text
+
 REDACTED = "[redacted]"
+
+#: Limits for a single log line. A log record carries device-derived values, so each part
+#: needs a bound of its own: being serialisable is not the same as being a sensible size,
+#: and an unreadable line helps nobody diagnose the failure it describes.
+MAX_MESSAGE_LENGTH = 2000
+MAX_TRACEBACK_LENGTH = 8000
+MAX_CONTEXT_STRING = 500
+MAX_CONTEXT_ITEMS = 50
+MAX_CONTEXT_DEPTH = 6
+MAX_CONTEXT_NODES = 500
 
 #: Patterns stripped from every log record when redaction is enabled.
 _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -86,14 +98,28 @@ class JsonFormatter(logging.Formatter):
             "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
             "level": record.levelname,
             "logger": record.name,
-            "message": message,
+            "message": bounded_text(message, MAX_MESSAGE_LENGTH),
         }
         payload: dict[str, Any] = dict(base)
         context = getattr(record, "context", None)
         if isinstance(context, dict):
-            payload.update(context)
+            # Bounded, not merely serialisable. `default=str` *succeeds* for an object whose
+            # `__str__` returns megabytes, so the fallback below never runs and the line is
+            # unbounded. Context values come from device responses, so the limit has to be
+            # applied before `json.dumps` sees them.
+            payload.update(
+                bounded_payload(
+                    context,
+                    max_string=MAX_CONTEXT_STRING,
+                    max_items=MAX_CONTEXT_ITEMS,
+                    max_depth=MAX_CONTEXT_DEPTH,
+                    max_nodes=MAX_CONTEXT_NODES,
+                )
+            )
         if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
+            payload["exception"] = bounded_text(
+                self.formatException(record.exc_info), MAX_TRACEBACK_LENGTH
+            )
 
         # `allow_nan=False` because `json.dumps` otherwise emits bare NaN and Infinity,
         # which no JSON parser accepts: one malformed value from a device would make the

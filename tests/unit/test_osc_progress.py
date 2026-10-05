@@ -8,7 +8,6 @@ which must answer with the error taxonomy rather than an exception of their own.
 from __future__ import annotations
 
 import json
-import time
 from typing import Any
 
 import pytest
@@ -107,12 +106,15 @@ def test_a_completion_outside_the_documented_range_is_dropped(value: Any) -> Non
 
 
 def test_an_enormous_padded_command_id_is_rejected_without_being_normalised() -> None:
-    """`strip()` copies the whole string, so the bound must be checked on the raw value."""
+    """`strip()` copies the whole string, so the bound must be checked on the raw value.
+
+    The assertion is the verdict, not a stopwatch: `strip()` on fifty million spaces takes
+    about forty milliseconds, which no timing threshold can separate from the correct
+    behaviour on a shared CI runner. The ordering is what the test pins down.
+    """
     padded = " " * 50_000_000 + "abc"
 
-    started = time.monotonic()
     assert validated_command_id(padded) is None
-    assert time.monotonic() - started < 1.0
 
 
 @pytest.mark.parametrize(
