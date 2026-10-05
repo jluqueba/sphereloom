@@ -65,10 +65,12 @@ class CommandRunner:
         name: str,
         parameters: Mapping[str, Any] | None = None,
         *,
-        retryable: bool = False,
         deadline_seconds: float | None = None,
     ) -> CommandResult:
         """Execute a command and return only once it has actually finished.
+
+        Whether the command is retried is decided by the client, from the command name, so
+        a caller cannot accidentally make a capture repeatable.
 
         Raises:
             SphereLoomError: for any vendor error, mapped to the taxonomy.
@@ -82,7 +84,7 @@ class CommandRunner:
             else _validated_deadline(deadline_seconds)
         )
 
-        payload = await self._client.execute(name, parameters, retryable=retryable)
+        payload = await self._client.execute(name, parameters)
         state = payload.get("state")
 
         if state == STATE_ERROR or "error" in payload:

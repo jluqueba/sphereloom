@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Security
+
+- The OSC client validates that a file URL supplied by the camera stays on the camera's own
+  origin before following it. Download URLs arrive in device responses, and a malformed or
+  hostile payload could otherwise make SphereLoom fetch an arbitrary host with the client's
+  headers attached.
+
 ### Added
 
 - OSC HTTP client (`sphereloom.adapters.osc.client`) enforcing the three protocol

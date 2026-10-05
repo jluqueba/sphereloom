@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import random
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -30,6 +30,7 @@ from sphereloom import __version__
 from sphereloom.domain.clock import Monotonic, SystemMonotonic
 from sphereloom.domain.errors import (
     InternalError,
+    InvalidArgumentError,
     NotConnectedError,
     OperationTimeoutError,
     RateLimitedError,
@@ -52,8 +53,20 @@ XSRF_VALUE = "1"
 #: The vendor's guidance is at most one `/osc/info` request per second.
 INFO_MIN_INTERVAL_SECONDS = 1.0
 
-#: Retries apply only to requests that are safe to repeat. Anything that captures, changes
-#: a setting or deletes is excluded, because repeating it is worse than reporting an error.
+#: Commands that are safe to repeat. Anything absent is treated as unsafe, so a command
+#: added later cannot silently inherit retries by omission.
+#:
+#: The decision lives here rather than in a caller-supplied flag. A guarantee that "captures
+#: never retry" is only as good as every call site remembering to say so, and the cost of
+#: one forgotten argument is a duplicated photograph or a repeated delete.
+RETRY_SAFE_COMMANDS = frozenset(
+    {
+        "camera.getOptions",
+        "camera.listFiles",
+    }
+)
+
+#: Retries apply only to requests that are safe to repeat.
 MAX_ATTEMPTS = 3
 BACKOFF_BASE_SECONDS = 0.25
 BACKOFF_MAX_SECONDS = 2.0
@@ -113,8 +126,11 @@ class OscHttpClient:
         #: Serialises command execution. The vendor advises strongly against overlapping
         #: commands, and a lock is the only way to guarantee it regardless of caller.
         self._command_lock = asyncio.Lock()
+        #: Serialises `/osc/info` separately, so concurrent callers cannot each miss an
+        #: empty cache and issue a burst of requests inside one vendor window.
+        self._info_lock = asyncio.Lock()
         self._info_cache: dict[str, Any] | None = None
-        self._info_fetched_at: float | None = None
+        self._info_attempted_at: float | None = None
 
     @property
     def base_url(self) -> str:
@@ -136,26 +152,39 @@ class OscHttpClient:
         the remaining interval instead of skipping it: the throttle is a protocol
         constraint, not a performance optimisation, so no caller gets to opt out of it.
         """
-        cached = self._cached_info()
-        if cached is not None and not force_refresh:
-            return cached
+        # Serialised so concurrent callers cannot all miss an empty cache and issue a burst
+        # of requests inside one vendor window. The cache is re-checked after acquiring,
+        # since whoever held the lock has probably just populated it.
+        async with self._info_lock:
+            if not force_refresh:
+                cached = self._cached_info()
+                if cached is not None:
+                    return cached
 
-        if force_refresh and self._info_fetched_at is not None:
+            payload = await self._request_json(
+                "GET", INFO_PATH, retryable=True, before_attempt=self._await_info_window
+            )
+            self._info_cache = payload
+            return CachedInfo(payload=payload, age_seconds=0.0)
+
+    async def _await_info_window(self) -> None:
+        """Wait until the vendor's minimum interval has elapsed, then claim the window.
+
+        Called before every attempt, retries included, so a burst of retries cannot slip
+        several requests into one window.
+        """
+        if self._info_attempted_at is not None:
             remaining = INFO_MIN_INTERVAL_SECONDS - (
-                self._monotonic.elapsed() - self._info_fetched_at
+                self._monotonic.elapsed() - self._info_attempted_at
             )
             if remaining > 0:
                 await asyncio.sleep(remaining)
-
-        payload = await self._request_json("GET", INFO_PATH, retryable=True)
-        self._info_cache = payload
-        self._info_fetched_at = self._monotonic.elapsed()
-        return CachedInfo(payload=payload, age_seconds=0.0)
+        self._info_attempted_at = self._monotonic.elapsed()
 
     def _cached_info(self) -> CachedInfo | None:
-        if self._info_cache is None or self._info_fetched_at is None:
+        if self._info_cache is None or self._info_attempted_at is None:
             return None
-        age = self._monotonic.elapsed() - self._info_fetched_at
+        age = self._monotonic.elapsed() - self._info_attempted_at
         if age >= INFO_MIN_INTERVAL_SECONDS:
             return None
         return CachedInfo(payload=self._info_cache, age_seconds=age)
@@ -168,13 +197,13 @@ class OscHttpClient:
         self,
         name: str,
         parameters: Mapping[str, Any] | None = None,
-        *,
-        retryable: bool = False,
     ) -> dict[str, Any]:
         """Run one command, serialised against every other command.
 
-        `retryable` defaults to False on purpose. Opting in is a decision the caller must
-        make per command, having thought about what a duplicate would do.
+        Whether the command may be retried is decided here, from `RETRY_SAFE_COMMANDS`, not
+        by the caller. A capture, a setting change or a delete is never repeated: the camera
+        may well have acted before the response was lost, and a duplicated shot is worse
+        than a clear error.
         """
         body: dict[str, Any] = {"name": name}
         if parameters:
@@ -182,7 +211,11 @@ class OscHttpClient:
 
         async with self._command_lock:
             return await self._request_json(
-                "POST", EXECUTE_PATH, json=body, retryable=retryable, command=name
+                "POST",
+                EXECUTE_PATH,
+                json=body,
+                retryable=name in RETRY_SAFE_COMMANDS,
+                command=name,
             )
 
     async def command_status(self, command_id: str) -> dict[str, Any]:
@@ -197,18 +230,50 @@ class OscHttpClient:
 
     @asynccontextmanager
     async def stream(self, url: str) -> AsyncIterator[httpx.Response]:
-        """Open a streaming download.
+        """Open a streaming download of a file the camera advertised.
+
+        The URL is validated against the configured camera origin first. It arrives in a
+        device response, and a malformed or hostile payload could otherwise point anywhere;
+        following it would send this client's requests, and its headers, to a host the
+        operator never chose.
 
         Separate from the JSON path because media files are routinely gigabytes: they are
         never buffered, parsed, or logged.
         """
-        request = self._client.build_request("GET", url)
+        target = self._validated_url(url)
+        request = self._client.build_request("GET", target)
         response = await self._client.send(request, stream=True)
         try:
             response.raise_for_status()
             yield response
         finally:
             await response.aclose()
+
+    def _validated_url(self, url: str) -> str:
+        """Confine a camera-supplied URL to the camera's own origin.
+
+        Relative paths are accepted and resolved against the base URL. Absolute URLs must
+        match the configured scheme, host and port exactly.
+        """
+        candidate = httpx.URL(url)
+
+        if not candidate.is_absolute_url:
+            return url
+
+        base = httpx.URL(self._base_url)
+        same_origin = (
+            candidate.scheme == base.scheme
+            and candidate.host == base.host
+            and candidate.port == base.port
+        )
+        if not same_origin:
+            raise InvalidArgumentError(
+                "The camera supplied a file URL pointing somewhere other than the camera "
+                "itself. SphereLoom refuses to follow it.",
+                backend=BACKEND,
+                details={"expected_host": base.host, "received_host": candidate.host},
+            )
+        return url
 
     # ------------------------------------------------------------------ internals
 
@@ -220,9 +285,15 @@ class OscHttpClient:
         json: Any = None,
         retryable: bool,
         command: str | None = None,
+        before_attempt: Callable[[], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         response = await self._send_with_retries(
-            method, path, json=json, retryable=retryable, command=command
+            method,
+            path,
+            json=json,
+            retryable=retryable,
+            command=command,
+            before_attempt=before_attempt,
         )
         return self._parse_json(response, command=command)
 
@@ -234,11 +305,17 @@ class OscHttpClient:
         json: Any,
         retryable: bool,
         command: str | None,
+        before_attempt: Callable[[], Awaitable[None]] | None = None,
     ) -> httpx.Response:
         attempts = MAX_ATTEMPTS if retryable else 1
         last_error: Exception | None = None
 
         for attempt in range(1, attempts + 1):
+            # Runs before every attempt, retries included, so a throttled endpoint cannot
+            # have several requests slipped into one window by a burst of retries.
+            if before_attempt is not None:
+                await before_attempt()
+
             try:
                 response = await self._client.request(method, path, json=json)
             except httpx.TimeoutException as exc:
