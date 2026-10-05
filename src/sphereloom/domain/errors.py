@@ -217,7 +217,8 @@ class InternalError(SphereLoomError):
 
     The camera's answer was unusable -- malformed or unrecognised vendor data, an unexpected
     HTTP status, an oversized response, a file URL that is unparseable or points off the
-    camera -- or SphereLoom itself is in a state it should never reach, which is a defect.
+    camera -- or the host failed for a reason unrelated to the request, such as an I/O
+    error, or SphereLoom itself is in a state it should never reach, which is a defect.
     """
 
     code = ErrorCode.INTERNAL

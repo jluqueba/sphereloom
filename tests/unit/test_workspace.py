@@ -10,7 +10,12 @@ from typing import Any
 
 import pytest
 
-from sphereloom.domain.errors import PathJailError, PermissionDeniedError, StorageFullError
+from sphereloom.domain.errors import (
+    InternalError,
+    PathJailError,
+    PermissionDeniedError,
+    StorageFullError,
+)
 from sphereloom.security.workspace import (
     MAX_COMPONENT_BYTES,
     MAX_PATH_LENGTH,
@@ -335,6 +340,12 @@ def test_the_workspace_root_itself_is_not_a_destination(workspace: Workspace, na
         (errno.EROFS, PermissionDeniedError),
         (errno.EINVAL, PathJailError),
         (errno.ENAMETOOLONG, PathJailError),
+        (errno.ENOENT, PathJailError),
+        # Failures unrelated to the name were reported as path errors with advice to
+        # rename, sending the caller after the wrong problem.
+        (errno.EIO, InternalError),
+        (errno.EMFILE, InternalError),
+        (errno.ENOMEM, InternalError),
     ],
 )
 @pytest.mark.parametrize("failing_call", ["mkdir", "mkstemp", "replace"])

@@ -19,6 +19,7 @@ from contextlib import contextmanager, suppress
 from pathlib import Path, PurePath
 
 from sphereloom.domain.errors import (
+    InternalError,
     PathJailError,
     PermissionDeniedError,
     SphereLoomError,
@@ -69,11 +70,36 @@ def _translate_os_error(exc: OSError, *, during: str) -> SphereLoomError:
             "permissions on the configured workspace.",
         )
 
-    return PathJailError(
-        f"The destination path was refused by the filesystem while trying to {during}. Use "
-        "a name made of letters, digits, dots, dashes and underscores, without trailing "
-        "spaces or dots.",
+    # Only a refusal of the *name* is a path error. Anything else -- an I/O error, too many
+    # open files, no memory -- says nothing about the name, and advising a rename would
+    # send the caller after the wrong problem.
+    if exc.errno in _NAME_REFUSALS:
+        return PathJailError(
+            f"The destination path was refused by the filesystem while trying to {during}. "
+            "Use a name made of letters, digits, dots, dashes and underscores, without "
+            "surrounding spaces or a trailing dot.",
+        )
+
+    return InternalError(
+        f"The filesystem failed while SphereLoom was trying to {during}, for a reason "
+        "unrelated to the file name. Retrying may succeed once the host recovers.",
     )
+
+
+#: Errors with which a filesystem refuses a name it will not create. Windows reports an
+#: invalid character as EINVAL and a name it silently rewrote, and therefore cannot find
+#: again, as ENOENT.
+_NAME_REFUSALS = frozenset(
+    {
+        errno.EINVAL,
+        errno.ENAMETOOLONG,
+        errno.ENOENT,
+        errno.ENOTDIR,
+        errno.EISDIR,
+        errno.EEXIST,
+        errno.EILSEQ,
+    }
+)
 
 
 class Workspace:
