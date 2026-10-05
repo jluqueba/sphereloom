@@ -201,9 +201,22 @@ Milestones double as release groupings. M2 is the first released version (0.1.0)
 ## Pull request completion
 
 - Copilot code review runs on every push to an open pull request (`review_on_push`).
-- A pull request is ready to merge only when the **most recent** review cycle reports no new findings **and** an empty "Previously missed" section.
-- Resolving one review's findings and merging on green CI is not sufficient: the fixing push starts a new review, which may surface new problems, including ones the fix introduced.
-- After pushing fixes, wait for the new review, read it, and repeat until a cycle comes back clean.
+- Read every review in full, then **triage each finding** before acting on it. Only correctness and security findings block a merge; see "Triage findings before acting" below.
+- A pull request is ready to merge when CI is green, the most recent review examined the current head commit, and that review, including its "Previously missed" section, contains **no unresolved correctness or security finding**.
+- A fixing push starts a new review, which may surface new problems, including ones the fix introduced. Wait for it and triage it the same way before merging.
+
+### Triage findings before acting
+
+Fix a finding before merging only if it is one of these:
+
+- **Correctness**: wrong behaviour on some input, a wrong or misleading error code, a test that cannot fail or exercises a different branch than it claims, a CI or merge gate that can pass when it should not.
+- **Security**: a leak of secrets or personal data, an escape from the path jail, unbounded work or memory on untrusted input, an off-origin request, a missing authentication or confirmation check.
+
+Everything else is **minor** and does not block: wording, docstring and comment typos, style, naming, consistency nits, and hardening against a condition no realistic input can trigger. Reply on the thread that it was judged minor under this rule, resolve it, and do not push a commit for it. A minor finding may be folded into a later change that touches the same code.
+
+Verify before fixing. Reproduce a claimed defect first; a finding that does not reproduce is answered on its thread with the evidence and resolved, not fixed on faith.
+
+This rule relaxes what blocks a merge, not what is done before pushing. The local safeguards stay mandatory for every change: the codebase rule tests, the suite on both Windows and Linux, an adversarial review of the diff, and mutation checks for any new test written to catch a regression.
 
 ### Read the review body, not only the inline comments
 
@@ -216,7 +229,7 @@ Findings are reported in two different places, and reading only one of them hide
 - Thread resolution state is only available through GraphQL (`reviewThreads { isResolved }`), not REST.
 - Treat an unreadable answer as not clean: a check that cannot read its input must never report success.
 - Compare review and comment timestamps against the last push to prove a cycle ran after the change, but use timestamps to establish *which cycle is current*, never to decide which findings still need work.
-- Resolve review threads only after the findings are actually addressed, never to unblock a merge.
+- Resolve review threads only after the findings are actually addressed, never to unblock a merge. Under the triage rule, a minor finding is addressed by a reply explaining that it was judged minor.
 - Automated review cannot read `docs/internal/**` because it is encrypted; those changes need a maintainer with the key.
 
 ## Authoritative artifacts

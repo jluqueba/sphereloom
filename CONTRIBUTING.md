@@ -114,7 +114,7 @@ Milestone **M2 is the first released version and the MVP**: reaching it produces
 
 Copilot code review is configured as a branch ruleset with `review_on_push`, so **every push to an open PR triggers a new review**. That makes the merge condition easy to get wrong:
 
-> A PR is ready to merge only when the **most recent** review cycle produced **no new findings**.
+> A PR is ready to merge when CI is green, the most recent review examined the current head commit, and that review contains **no unresolved correctness or security finding**.
 
 Resolving the findings from one review and merging as soon as CI turns green is not enough. The push that fixed those findings starts another review, and that review can surface new ones — including problems introduced by the fix itself.
 
@@ -122,8 +122,21 @@ The sequence to follow:
 
 1. Push the fixes.
 2. Wait for CI **and** for the new review to be posted.
-3. Read the new review, **both** its inline comments and its body. If either reports findings, fix them and return to step 1.
-4. Only when a full cycle comes back clean, resolve the threads and merge.
+3. Read the new review, **both** its inline comments and its body, and triage every finding as described below. If any finding is a correctness or security issue, fix it and return to step 1.
+4. When none remains, reply to and resolve any minor threads, then merge.
+
+#### Triage findings before acting
+
+Only two kinds of finding block a merge:
+
+- **Correctness** — wrong behaviour on some input, a wrong or misleading error code, a test that cannot fail or exercises a different branch than it claims, or a CI or merge gate that can pass when it should not.
+- **Security** — a leak of secrets or personal data, an escape from the path jail, unbounded work or memory on untrusted input, an off-origin request, or a missing authentication or confirmation check.
+
+Everything else is **minor** and does not block: wording, docstring and comment typos, style, naming, consistency nits, and hardening against a condition no realistic input can trigger. Reply on the thread that it was judged minor under this rule and resolve it, without pushing a commit for it. A minor finding can be folded into a later change that touches the same code.
+
+Reproduce a claimed defect before fixing it. A finding that does not reproduce is answered on its thread with the evidence, and resolved.
+
+This rule exists because chasing every finding on a large pull request does not converge. Each fix adds code, each new line is new review surface, and the reviewer revisits unchanged code in every cycle, so "zero findings" keeps moving. It relaxes only what blocks a merge. The checks before pushing stay mandatory for every change: the codebase rule tests, the suite on both Windows and Linux, an adversarial review of the diff, and a mutation check for any test written to catch a regression.
 
 #### Findings appear in two places
 
