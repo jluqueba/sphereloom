@@ -27,7 +27,7 @@ from typing import Any
 import httpx
 
 from sphereloom import __version__
-from sphereloom.domain.clock import Clock, SystemClock
+from sphereloom.domain.clock import Monotonic, SystemMonotonic
 from sphereloom.domain.errors import (
     InternalError,
     NotConnectedError,
@@ -83,13 +83,16 @@ class OscHttpClient:
         *,
         connect_timeout: float = 5.0,
         read_timeout: float = 15.0,
-        clock: Clock | None = None,
-        client: httpx.AsyncClient | None = None,
+        monotonic: Monotonic | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
-        self._clock = clock or SystemClock()
-        self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(
+        self._monotonic = monotonic or SystemMonotonic()
+        # The client is constructed here rather than injected. Accepting an outside client
+        # would let a caller bypass every protocol setting below -- the mandatory header,
+        # the explicit timeouts, the redirect policy -- while this class still claimed to
+        # enforce them. A configuration guarantee that can be opted out of silently is not
+        # a guarantee.
+        self._client = httpx.AsyncClient(
             base_url=self._base_url,
             headers={
                 XSRF_HEADER: XSRF_VALUE,
@@ -118,9 +121,8 @@ class OscHttpClient:
         return self._base_url
 
     async def aclose(self) -> None:
-        """Release the connection pool, if this client owns it."""
-        if self._owns_client:
-            await self._client.aclose()
+        """Release the connection pool."""
+        await self._client.aclose()
 
     # ------------------------------------------------------------------ endpoints
 
@@ -129,17 +131,34 @@ class OscHttpClient:
 
         Returns the age of the payload so a caller can decide whether remembered data is
         good enough, rather than being silently handed something stale.
+
+        `force_refresh` asks for a live reading rather than a cached one. It **waits** for
+        the remaining interval instead of skipping it: the throttle is a protocol
+        constraint, not a performance optimisation, so no caller gets to opt out of it.
         """
-        now = self._monotonic()
-        if not force_refresh and self._info_cache is not None and self._info_fetched_at is not None:
-            age = now - self._info_fetched_at
-            if age < INFO_MIN_INTERVAL_SECONDS:
-                return CachedInfo(payload=self._info_cache, age_seconds=age)
+        cached = self._cached_info()
+        if cached is not None and not force_refresh:
+            return cached
+
+        if force_refresh and self._info_fetched_at is not None:
+            remaining = INFO_MIN_INTERVAL_SECONDS - (
+                self._monotonic.elapsed() - self._info_fetched_at
+            )
+            if remaining > 0:
+                await asyncio.sleep(remaining)
 
         payload = await self._request_json("GET", INFO_PATH, retryable=True)
         self._info_cache = payload
-        self._info_fetched_at = self._monotonic()
+        self._info_fetched_at = self._monotonic.elapsed()
         return CachedInfo(payload=payload, age_seconds=0.0)
+
+    def _cached_info(self) -> CachedInfo | None:
+        if self._info_cache is None or self._info_fetched_at is None:
+            return None
+        age = self._monotonic.elapsed() - self._info_fetched_at
+        if age >= INFO_MIN_INTERVAL_SECONDS:
+            return None
+        return CachedInfo(payload=self._info_cache, age_seconds=age)
 
     async def state(self) -> dict[str, Any]:
         """Read battery, storage and capture state."""
@@ -192,12 +211,6 @@ class OscHttpClient:
             await response.aclose()
 
     # ------------------------------------------------------------------ internals
-
-    def _monotonic(self) -> float:
-        # The injected clock rather than `time.monotonic`, so tests can advance time without
-        # sleeping. Wall-clock jumps could in principle skew the cache window, but the
-        # window is one second and the consequence is one extra request.
-        return self._clock.now().timestamp()
 
     async def _request_json(
         self,

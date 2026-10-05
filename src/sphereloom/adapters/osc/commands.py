@@ -18,8 +18,8 @@ from typing import Any
 
 from sphereloom.adapters.osc.client import OscHttpClient
 from sphereloom.adapters.osc.errors import BACKEND, map_vendor_error
-from sphereloom.domain.clock import Clock, SystemClock
-from sphereloom.domain.errors import OperationTimeoutError
+from sphereloom.domain.clock import Monotonic, SystemMonotonic
+from sphereloom.domain.errors import InvalidArgumentError, OperationTimeoutError
 from sphereloom.logging import get_logger
 
 logger = get_logger("adapters.osc.commands")
@@ -53,12 +53,12 @@ class CommandRunner:
         self,
         client: OscHttpClient,
         *,
-        clock: Clock | None = None,
+        monotonic: Monotonic | None = None,
         default_deadline: float = 30.0,
     ) -> None:
         self._client = client
-        self._clock = clock or SystemClock()
-        self._default_deadline = default_deadline
+        self._monotonic = monotonic or SystemMonotonic()
+        self._default_deadline = _validated_deadline(default_deadline)
 
     async def run(
         self,
@@ -74,6 +74,14 @@ class CommandRunner:
             SphereLoomError: for any vendor error, mapped to the taxonomy.
             OperationTimeoutError: if the command does not reach a terminal state in time.
         """
+        # `is None` rather than a falsy check: a caller passing 0 means "do not wait", and
+        # silently turning that into the default deadline would change what they asked for.
+        deadline = (
+            self._default_deadline
+            if deadline_seconds is None
+            else _validated_deadline(deadline_seconds)
+        )
+
         payload = await self._client.execute(name, parameters, retryable=retryable)
         state = payload.get("state")
 
@@ -86,23 +94,24 @@ class CommandRunner:
                 # Without an identifier there is nothing to poll. Reporting this is better
                 # than returning an acknowledgement as though it were a result.
                 raise map_vendor_error(payload, command=name)
-            return await self._await_completion(
-                name,
-                str(command_id),
-                deadline_seconds=deadline_seconds or self._default_deadline,
-            )
+            return await self._await_completion(name, str(command_id), deadline_seconds=deadline)
 
-        # `done`, or a command that simply has no asynchronous phase.
-        return CommandResult(name=name, results=_results(payload))
+        if state == STATE_DONE:
+            return CommandResult(name=name, results=_results(payload))
+
+        # Anything else is a response we do not understand. Treating an unrecognised state
+        # as success would turn a malformed reply into an empty successful result, which is
+        # the most misleading outcome available.
+        raise map_vendor_error(payload, command=name)
 
     async def _await_completion(
         self, name: str, command_id: str, *, deadline_seconds: float
     ) -> CommandResult:
-        started = self._now()
+        started = self._monotonic.elapsed()
         interval = POLL_INITIAL_SECONDS
 
         while True:
-            elapsed = self._now() - started
+            elapsed = self._monotonic.elapsed() - started
             if elapsed >= deadline_seconds:
                 raise OperationTimeoutError(
                     f"{name} did not report completion within {deadline_seconds:.0f} seconds. "
@@ -124,6 +133,11 @@ class CommandRunner:
             if state == STATE_DONE:
                 return CommandResult(name=name, results=_results(payload), command_id=command_id)
 
+            if state != STATE_IN_PROGRESS:
+                # An unrecognised state during polling is as untrustworthy as one in the
+                # initial response, and looping on it forever would be worse still.
+                raise map_vendor_error(payload, command=name)
+
             logger.debug(
                 "command still running",
                 extra={
@@ -134,8 +148,13 @@ class CommandRunner:
                 },
             )
 
-    def _now(self) -> float:
-        return self._clock.now().timestamp()
+
+def _validated_deadline(seconds: float) -> float:
+    """Reject a deadline that cannot mean what the caller intended."""
+    if seconds < 0:
+        message = f"A command deadline cannot be negative, got {seconds!r}."
+        raise InvalidArgumentError(message, backend=BACKEND)
+    return seconds
 
 
 def _results(payload: Mapping[str, Any]) -> dict[str, Any]:

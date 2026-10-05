@@ -31,7 +31,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 from starlette.applications import Starlette
-from starlette.requests import Request
+from starlette.requests import ClientDisconnect, Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
@@ -338,6 +338,11 @@ class FakeCamera:
         )
 
     async def osc_execute(self, request: Request) -> Response:
+        # Logged before anything can fail, so a request that times out mid-flight is still
+        # counted. A test asserting "this was attempted once" needs that to be true even
+        # when the client gave up before the body was read.
+        self.request_log.append("POST /osc/commands/execute")
+
         rejected = self._guard(request)
         if rejected is not None:
             return rejected
@@ -354,6 +359,9 @@ class FakeCamera:
         try:
             await self._apply_latency()
             return await self._dispatch(request)
+        except ClientDisconnect:
+            # The caller timed out and went away. Nothing to answer, and nothing wrong.
+            return Response(status_code=499)
         finally:
             self._executing = False
 

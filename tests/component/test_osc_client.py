@@ -18,10 +18,11 @@ from sphereloom.adapters.fake.camera_server import FakeCamera
 from sphereloom.adapters.fake.runner import run_fake_camera
 from sphereloom.adapters.osc.client import INFO_MIN_INTERVAL_SECONDS, OscHttpClient
 from sphereloom.adapters.osc.commands import CommandRunner
-from sphereloom.domain.clock import FakeClock
+from sphereloom.domain.clock import FakeMonotonic
 from sphereloom.domain.errors import (
     CameraBusyError,
     InternalError,
+    InvalidArgumentError,
     NotConnectedError,
     OperationTimeoutError,
     StorageFullError,
@@ -115,12 +116,12 @@ async def test_cached_info_reports_its_age(client: OscHttpClient) -> None:
 
 
 async def test_the_cache_expires(camera: FakeCamera) -> None:
-    clock = FakeClock()
+    monotonic = FakeMonotonic()
     with run_fake_camera(camera) as base_url:
-        http = OscHttpClient(base_url, clock=clock)
+        http = OscHttpClient(base_url, monotonic=monotonic)
         try:
             await http.info()
-            clock.advance(INFO_MIN_INTERVAL_SECONDS + 0.1)
+            monotonic.advance(INFO_MIN_INTERVAL_SECONDS + 0.1)
             await http.info()
         finally:
             await http.aclose()
@@ -128,11 +129,23 @@ async def test_the_cache_expires(camera: FakeCamera) -> None:
     assert camera.request_log.count("GET /osc/info") == 2
 
 
-async def test_a_forced_refresh_bypasses_the_cache(
-    camera: FakeCamera, client: OscHttpClient
+async def test_a_forced_refresh_waits_for_the_throttle_rather_than_skipping_it(
+    camera: FakeCamera,
 ) -> None:
-    await client.info()
-    await client.info(force_refresh=True)
+    """The throttle is a protocol constraint, not a performance optimisation.
+
+    A forced refresh gets live data, but it waits its turn: no caller gets to opt out of
+    the vendor's one-request-per-second guidance.
+    """
+    monotonic = FakeMonotonic()
+    with run_fake_camera(camera) as base_url:
+        http = OscHttpClient(base_url, monotonic=monotonic)
+        try:
+            await http.info()
+            monotonic.advance(INFO_MIN_INTERVAL_SECONDS + 0.1)
+            await http.info(force_refresh=True)
+        finally:
+            await http.aclose()
 
     assert camera.request_log.count("GET /osc/info") == 2
 
@@ -328,3 +341,107 @@ async def test_a_file_can_be_streamed_without_buffering(client: OscHttpClient) -
             received += len(chunk)
 
     assert received == entry["size"]
+
+
+# ---------------------------------------------------------------- timeouts
+
+
+async def test_a_slow_response_maps_to_the_timeout_taxonomy() -> None:
+    """A camera that accepts the connection but never answers is a real failure mode.
+
+    It is distinct from an unreachable camera, and the taxonomy must tell them apart so an
+    agent can say something useful.
+    """
+    slow = FakeCamera(scenario=scenarios.Scenario(latency_seconds=2.0))
+    with run_fake_camera(slow) as base_url:
+        http = OscHttpClient(base_url, read_timeout=0.2)
+        try:
+            with pytest.raises(OperationTimeoutError) as caught:
+                await http.state()
+        finally:
+            await http.aclose()
+
+    assert "timeout" in caught.value.message.lower()
+    assert caught.value.retryable is True
+
+
+async def test_a_timed_out_idempotent_request_is_retried_but_bounded() -> None:
+    """Retrying a read is right; retrying forever is not."""
+    slow = FakeCamera(scenario=scenarios.Scenario(latency_seconds=2.0))
+    with run_fake_camera(slow) as base_url:
+        http = OscHttpClient(base_url, read_timeout=0.2)
+        try:
+            with pytest.raises(OperationTimeoutError):
+                await http.execute("camera.getOptions", retryable=True)
+        finally:
+            await http.aclose()
+
+    attempts = slow.request_log.count("POST /osc/commands/execute")
+    assert 1 < attempts <= 3
+
+
+async def test_a_timed_out_capture_is_not_retried() -> None:
+    """The camera may have taken the photograph before the response was lost."""
+    slow = FakeCamera(scenario=scenarios.Scenario(latency_seconds=2.0))
+    with run_fake_camera(slow) as base_url:
+        http = OscHttpClient(base_url, read_timeout=0.2)
+        try:
+            with pytest.raises(OperationTimeoutError):
+                await http.execute("camera.takePicture")
+        finally:
+            await http.aclose()
+
+    assert slow.request_log.count("POST /osc/commands/execute") == 1
+
+
+# ---------------------------------------------------------------- malformed responses
+
+
+async def test_an_unrecognised_state_is_not_treated_as_success(
+    runner: CommandRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Accepting any non-error state as success turns a malformed reply into an empty
+    successful result, which is the most misleading outcome available."""
+
+    async def unexpected_state(*args: object, **kwargs: object) -> dict[str, object]:
+        return {"name": "camera.takePicture", "state": "somethingElse"}
+
+    monkeypatch.setattr(runner._client, "execute", unexpected_state)
+
+    with pytest.raises(InternalError):
+        await runner.run("camera.takePicture")
+
+
+async def test_an_empty_response_is_not_treated_as_success(
+    runner: CommandRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def empty(*args: object, **kwargs: object) -> dict[str, object]:
+        return {}
+
+    monkeypatch.setattr(runner._client, "execute", empty)
+
+    with pytest.raises(InternalError):
+        await runner.run("camera.takePicture")
+
+
+# ---------------------------------------------------------------- deadline handling
+
+
+async def test_a_zero_deadline_means_zero_not_the_default(client: OscHttpClient) -> None:
+    """`or` would silently turn an explicit 0 into the default, changing what was asked."""
+    slow = FakeCamera(capture_polls=10_000)
+    with run_fake_camera(slow) as base_url:
+        http = OscHttpClient(base_url)
+        runner = CommandRunner(http, default_deadline=60.0)
+        try:
+            with pytest.raises(OperationTimeoutError):
+                await runner.run("camera.takePicture", deadline_seconds=0)
+        finally:
+            await http.aclose()
+
+
+async def test_a_negative_deadline_is_rejected(client: OscHttpClient) -> None:
+    runner = CommandRunner(client)
+
+    with pytest.raises(InvalidArgumentError):
+        await runner.run("camera.takePicture", deadline_seconds=-1)

@@ -43,9 +43,21 @@ _VENDOR_CODES: dict[str, type[SphereLoomError]] = {
 #: SphereLoom can do recovers from these, so the message has to reach the user intact.
 _OWNER_ACTION_CODES = {"unactivated", "cameraNotActivated"}
 
-#: How many characters of an unrecognised payload to quote back. Enough to identify the
-#: problem, short enough that a stray thumbnail or file path cannot escape through a log.
+#: How much of an unrecognised payload to preserve. Generous enough to identify a problem,
+#: bounded so an untrusted camera response cannot flood a log or an error envelope.
 _EXCERPT_LIMIT = 200
+_MAX_ITEMS = 20
+_MAX_DEPTH = 4
+
+#: Vendor code and message are attacker-adjacent input: they come from a device we do not
+#: control, and they are rendered into the public error. Both are bounded before use.
+_CODE_LIMIT = 64
+_MESSAGE_LIMIT = 300
+
+
+def _bounded(text: str, limit: int) -> str:
+    collapsed = " ".join(text.split())
+    return collapsed if len(collapsed) <= limit else collapsed[:limit] + "…"
 
 
 def map_vendor_error(
@@ -67,8 +79,8 @@ def map_vendor_error(
             details=_details(payload, command),
         )
 
-    code = str(error.get("code", "")).strip()
-    message = str(error.get("message", "")).strip()
+    code = _bounded(str(error.get("code", "")), _CODE_LIMIT)
+    message = _bounded(str(error.get("message", "")), _MESSAGE_LIMIT)
 
     if code in _OWNER_ACTION_CODES:
         return InvalidArgumentError(
@@ -146,12 +158,27 @@ def _details(payload: Any, command: str | None) -> dict[str, Any]:
     return details
 
 
-def _excerpt(payload: Any) -> Any:
-    """Preserve the vendor payload, bounded so a large response cannot flood a log."""
+def _excerpt(payload: Any, *, depth: int = 0) -> Any:
+    """Preserve the vendor payload within an overall budget.
+
+    Strings, collection sizes and nesting depth are all bounded. Truncating only strings
+    would leave a wide, shallow object -- hundreds of short keys -- almost unchanged, which
+    is just as effective at flooding an error envelope.
+    """
+    if depth >= _MAX_DEPTH:
+        return "…"
+
     if isinstance(payload, dict):
-        return {key: _excerpt(value) for key, value in payload.items()}
+        items = list(payload.items())[:_MAX_ITEMS]
+        excerpt = {key: _excerpt(value, depth=depth + 1) for key, value in items}
+        if len(payload) > _MAX_ITEMS:
+            excerpt["…"] = f"{len(payload) - _MAX_ITEMS} more keys"
+        return excerpt
+
     if isinstance(payload, list):
-        return [_excerpt(item) for item in payload[:5]]
+        return [_excerpt(item, depth=depth + 1) for item in payload[:_MAX_ITEMS]]
+
     if isinstance(payload, str):
-        return payload if len(payload) <= _EXCERPT_LIMIT else payload[:_EXCERPT_LIMIT] + "…"
+        return _bounded(payload, _EXCERPT_LIMIT)
+
     return payload

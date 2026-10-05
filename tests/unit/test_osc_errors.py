@@ -116,6 +116,51 @@ def test_a_long_vendor_string_is_truncated() -> None:
     assert len(str(error["message"])) < 300
 
 
+def test_a_long_vendor_message_is_bounded_in_every_field_it_reaches() -> None:
+    """Truncating only the copy under `details` leaves two unbounded paths open.
+
+    The message and the reason are both rendered into the public error envelope, so an
+    untrusted camera response could flood a log through either.
+    """
+    mapped = map_vendor_error(_error("noFreeSpace", "x" * 5000))
+
+    assert len(mapped.message) < 1000
+    assert mapped.reason is not None
+    assert len(mapped.reason) < 400
+
+
+def test_a_long_vendor_code_is_bounded() -> None:
+    mapped = map_vendor_error(_error("z" * 5000))
+
+    assert len(mapped.message) < 1000
+
+
+def test_a_wide_payload_is_bounded_by_item_count() -> None:
+    """Truncating only strings leaves a wide, shallow object almost unchanged."""
+    payload = {
+        "error": {"code": "noFreeSpace", "message": "full"},
+        **{f"key{index}": index for index in range(500)},
+    }
+
+    vendor = map_vendor_error(payload).details["vendor"]
+
+    assert isinstance(vendor, dict)
+    assert len(vendor) <= 25
+
+
+def test_a_deeply_nested_payload_is_bounded_by_depth() -> None:
+    nested: dict[str, object] = {"error": {"code": "noFreeSpace", "message": "full"}}
+    cursor = nested
+    for _ in range(50):
+        child: dict[str, object] = {}
+        cursor["deeper"] = child
+        cursor = child
+
+    rendered = str(map_vendor_error(nested).details["vendor"])
+
+    assert len(rendered) < 2000
+
+
 def test_every_mapped_error_carries_the_backend() -> None:
     """Results and errors name the backend so an agent can explain which path failed."""
     for code in ("disabledCommand", "noFreeSpace", "unknownToUs"):
