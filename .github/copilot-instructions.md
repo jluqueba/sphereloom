@@ -211,7 +211,7 @@ Milestones double as release groupings. M2 is the first released version (0.1.0)
 
 - Copilot code review runs on every push to an open pull request (`review_on_push`).
 - Read every review in full, then **triage each finding** before acting on it. Only correctness and security findings block a merge; see "Triage findings before acting" below.
-- A pull request is ready to merge when CI is green, the most recent review examined the current head commit, and that review, including its "Previously missed" section, contains **no unresolved correctness or security finding**.
+- A pull request is ready to merge when CI is green, the most recent **Copilot** review examined the current head commit, and that review, including its "Previously missed" section, contains **no unresolved correctness or security finding**.
 - A fixing push starts a new review, which may surface new problems, including ones the fix introduced. Wait for it and triage it the same way before merging.
 - Do not widen the scope of a pull request while it is under review.
 - Allow at most three review cycles per pull request. If blocking findings remain after the third, stop, explain why the change is not converging, and propose splitting or narrowing it instead of iterating further.
@@ -233,8 +233,9 @@ This rule relaxes what blocks a merge, not what is done before pushing. The loca
 
 Findings are reported in two different places, and reading only one of them hides the rest. This has happened: six medium findings survived several cycles because only inline comments were being checked.
 
-- **Inline threads** carry the findings attached to changed lines: `gh api repos/<owner>/<repo>/pulls/<n>/comments`.
-- **The review body** carries the overview and two sections that appear nowhere else: the **severity counts** (`Findings: 1 High`), and **"Previously missed (n)"**, which lists findings in code that has not changed since the last review. Read it with `gh api repos/<owner>/<repo>/pulls/<n>/reviews`, taking the `body` of the most recent review.
+- **Inline threads** carry the findings attached to changed lines: `gh api --paginate repos/<owner>/<repo>/pulls/<n>/comments`, filtered to the login `Copilot`.
+- **The review body** carries the overview and two sections that appear nowhere else: the **severity counts** (`Findings: 1 High`), and **"Previously missed (n)"**, which lists findings in code that has not changed since the last review. Read the newest review *by Copilot*, together with the commit it examined: `gh pr view <n> --json reviews,headRefOid --jq '([.reviews[] | select(.author.login == "copilot-pull-request-reviewer")] | last) as $r | {head: .headRefOid, reviewed: $r.commit.oid, body: $r.body}'`. `gh pr view` fetches every review, whereas the REST endpoints return only the first 30 items unless paginated.
+- Never take "the last review" or "the last comment" without filtering by author and reading every page. The reviews endpoint also returns maintainer replies, and on a long pull request the first page ends well before the newest review: on #5 it stopped at review 30 of 62, at a maintainer reply nine hours older than the latest Copilot review.
 - Never filter findings by `created_at > last push`. That filter cannot by construction show an older finding that is still outstanding, which is exactly what "previously missed" means.
 - The reviewer appears under three logins: `copilot-pull-request-reviewer[bot]` in `/pulls/N/reviews`, `Copilot` in `/pulls/N/comments`, and `copilot-pull-request-reviewer` in GraphQL. Match the set exactly; a filter written for one returns nothing against another.
 - Thread resolution state is only available through GraphQL (`reviewThreads { isResolved }`), not REST.

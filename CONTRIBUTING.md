@@ -129,7 +129,7 @@ Milestone **M2 is the first released version (0.1.0) and the MVP**: reaching it 
 
 Copilot code review is configured as a branch ruleset with `review_on_push`, so **every push to an open PR triggers a new review**. That makes the merge condition easy to get wrong:
 
-> A PR is ready to merge when CI is green, the most recent review examined the current head commit, and that review contains **no unresolved correctness or security finding**.
+> A PR is ready to merge when CI is green, the most recent **Copilot** review examined the current head commit, and that review contains **no unresolved correctness or security finding**.
 
 Resolving the findings from one review and merging as soon as CI turns green is not enough. The push that fixed those findings starts another review, and that review can surface new ones — including problems introduced by the fix itself.
 
@@ -161,11 +161,20 @@ Reading only the inline comments hides part of the review. This has happened in 
 
 | Where | How to read it | What only it contains |
 | --- | --- | --- |
-| Inline threads | `gh api repos/jluqueba/sphereloom/pulls/<n>/comments` | Findings anchored to changed lines |
-| Review body | `gh api repos/jluqueba/sphereloom/pulls/<n>/reviews`, field `body` of the latest review | Severity counts, and **"Previously missed"** — findings in code that has not changed since the last review |
+| Inline threads | `gh api --paginate repos/jluqueba/sphereloom/pulls/<n>/comments`, filtered to the login `Copilot` | Findings anchored to changed lines |
+| Review body | `gh pr view <n> --json reviews,headRefOid`, newest review whose author is `copilot-pull-request-reviewer`, field `body` | Severity counts, and **"Previously missed"** — findings in code that has not changed since the last review |
 
-Two traps worth knowing:
+To read the latest Copilot review together with the commit it examined:
 
+```powershell
+gh pr view <n> --json reviews,headRefOid --jq '([.reviews[] | select(.author.login == "copilot-pull-request-reviewer")] | last) as $r | {head: .headRefOid, reviewed: $r.commit.oid, body: $r.body}'
+```
+
+If `reviewed` differs from `head`, the review for the latest push has not arrived yet.
+
+Three traps worth knowing:
+
+- **Do not take "the latest review" from an unfiltered, unpaginated list.** The REST endpoints return 30 items per page and include maintainer replies. On #5 the first page of reviews stopped at review 30 of 62, at a maintainer reply nine hours older than the latest Copilot review, so the procedure would have read a stale, irrelevant body. Filter by author and read every page, or use `gh pr view`, which fetches them all.
 - **Do not filter findings by "created after my last push."** That filter cannot, by construction, show an older finding that is still outstanding — which is precisely what "previously missed" means. Use timestamps only to identify which cycle is the current one.
 - **The reviewer has three different logins.** Verified against this repository: `copilot-pull-request-reviewer[bot]` in `/pulls/N/reviews`, `Copilot` in `/pulls/N/comments`, and `copilot-pull-request-reviewer` in GraphQL. A filter written for one silently returns nothing against another, so match the set exactly rather than with a wildcard. Thread resolution state (`isResolved`) is available only through GraphQL.
 
