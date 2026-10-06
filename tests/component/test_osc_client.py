@@ -11,14 +11,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import time
 import tracemalloc
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from typing import Any
 
 import httpx
 import pytest
 
+import sphereloom.adapters.osc.client as client_module
+import sphereloom.adapters.osc.commands as commands_module
 from sphereloom.adapters.fake import scenarios
 from sphereloom.adapters.fake.camera_server import FakeCamera
 from sphereloom.adapters.fake.runner import run_fake_camera
@@ -28,7 +29,7 @@ from sphereloom.adapters.osc.client import (
     RETRY_SAFE_COMMANDS,
     OscHttpClient,
 )
-from sphereloom.adapters.osc.commands import CommandRunner
+from sphereloom.adapters.osc.commands import POLL_INITIAL_SECONDS, CommandRunner
 from sphereloom.domain.clock import FakeMonotonic
 from sphereloom.domain.errors import (
     CameraBusyError,
@@ -61,6 +62,38 @@ async def client(camera: FakeCamera) -> AsyncIterator[OscHttpClient]:
 @pytest.fixture
 def runner(client: OscHttpClient) -> CommandRunner:
     return CommandRunner(client, default_deadline=10.0)
+
+
+class _SimulatedTime:
+    """Stands in for a module's `asyncio`: waiting advances a fake clock instead of time.
+
+    Every other attribute is the real module, so locks and tasks behave as they always do.
+    `sleep` records the delay it was asked for and advances the clock by it. `wait_for`
+    records the budget it was given, then fires the timeout at once, as if the awaited call
+    had used all of it without answering.
+    """
+
+    def __init__(self, monotonic: FakeMonotonic) -> None:
+        self._monotonic = monotonic
+        self.sleeps: list[float] = []
+        self.poll_budgets: list[float] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(asyncio, name)
+
+    async def sleep(self, delay: float) -> None:
+        self.sleeps.append(delay)
+        self._monotonic.advance(delay)
+
+    async def wait_for(
+        self,
+        awaitable: Coroutine[Any, Any, Any],
+        timeout: float,  # noqa: ASYNC109 - mirrors the signature of asyncio.wait_for
+    ) -> Any:
+        self.poll_budgets.append(timeout)
+        awaitable.close()
+        self._monotonic.advance(timeout)
+        raise TimeoutError
 
 
 # ---------------------------------------------------------------- transport basics
@@ -144,30 +177,32 @@ async def test_the_cache_expires(camera: FakeCamera) -> None:
 
 
 async def test_a_forced_refresh_waits_for_the_throttle_rather_than_skipping_it(
-    camera: FakeCamera,
+    camera: FakeCamera, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The throttle is a protocol constraint, not a performance optimisation.
 
     A forced refresh gets live data, but it waits its turn. The fake monotonic source is
     deliberately left *inside* the window so the waiting branch actually runs: advancing
-    past the interval first would make `remaining` non-positive and test nothing.
+    past the interval first would make `remaining` non-positive and test nothing. The wait
+    is simulated, so the assertion is on exactly what was asked for rather than on how long
+    a shared runner took to get round to it.
     """
     monotonic = FakeMonotonic()
+    simulated = _SimulatedTime(monotonic)
+    monkeypatch.setattr(client_module, "asyncio", simulated)
     with run_fake_camera(camera) as base_url:
         http = OscHttpClient(base_url, monotonic=monotonic)
         try:
             await http.info()
             # Only part of the window has passed, so the refresh must wait out the rest.
             monotonic.advance(0.3)
-            started = time.monotonic()
             await http.info(force_refresh=True)
-            waited = time.monotonic() - started
         finally:
             await http.aclose()
 
     assert camera.request_log.count("GET /osc/info") == 2
-    assert waited >= INFO_MIN_INTERVAL_SECONDS - 0.3 - 0.05, (
-        "the forced refresh returned without waiting out the vendor window"
+    assert simulated.sleeps == [pytest.approx(INFO_MIN_INTERVAL_SECONDS - 0.3)], (
+        "the forced refresh did not wait out the rest of the vendor window"
     )
 
 
@@ -955,25 +990,38 @@ async def test_a_non_finite_deadline_is_rejected(client: OscHttpClient, value: f
         await runner.run("camera.takePicture", deadline_seconds=value)
 
 
-async def test_a_deadline_is_not_exceeded_by_a_slow_poll() -> None:
+async def test_a_deadline_is_not_exceeded_by_a_slow_poll(
+    client: OscHttpClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Checking the deadline only before sleeping makes it advisory.
 
-    A poll can consume its own HTTP timeout on top of an exhausted budget, so the deadline
-    is bounded around the poll.
+    A poll can consume its own HTTP timeout on top of an exhausted budget, so the poll is
+    bounded by what remains of the deadline. Here the poll never answers at all, time is
+    simulated, and the budget the poll was given is asserted exactly: a stopwatch could
+    neither tell a 0.5-second bound from a 2-second one nor survive a descheduled runner.
+    The real timeout around the call only guards against a hang.
     """
-    stuck = FakeCamera(capture_polls=10_000, scenario=scenarios.Scenario(latency_seconds=0.4))
-    with run_fake_camera(stuck) as base_url:
-        http = OscHttpClient(base_url)
-        runner = CommandRunner(http)
-        started = time.monotonic()
-        try:
-            with pytest.raises(OperationTimeoutError) as caught:
-                await runner.run("camera.takePicture", deadline_seconds=0.5)
-            elapsed = time.monotonic() - started
-        finally:
-            await http.aclose()
+    monotonic = FakeMonotonic()
+    simulated = _SimulatedTime(monotonic)
+    monkeypatch.setattr(commands_module, "asyncio", simulated)
 
-    assert elapsed < 2.0, f"the deadline was exceeded by {elapsed - 0.5:.1f}s"
+    async def accepted(*args: object, **kwargs: object) -> dict[str, object]:
+        return {"name": "camera.takePicture", "state": "inProgress", "id": "cmd-1"}
+
+    async def never_answers(*args: object, **kwargs: object) -> dict[str, object]:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    monkeypatch.setattr(client, "execute", accepted)
+    monkeypatch.setattr(client, "command_status", never_answers)
+    runner = CommandRunner(client, monotonic=monotonic)
+
+    async with asyncio.timeout(10):
+        with pytest.raises(OperationTimeoutError) as caught:
+            await runner.run("camera.takePicture", deadline_seconds=0.5)
+
+    assert simulated.sleeps == [POLL_INITIAL_SECONDS]
+    assert simulated.poll_budgets == [pytest.approx(0.5 - POLL_INITIAL_SECONDS)]
     # A fractional budget must survive into the message: ":.0f" would report "0 seconds",
     # which reads as a bug rather than an explanation of what was configured.
     assert "0.5 seconds" in caught.value.message

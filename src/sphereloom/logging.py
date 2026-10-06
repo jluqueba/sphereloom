@@ -99,13 +99,15 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # `headers['Authorization']`, `token.get_secret_value()`, an escaped or quoted key --
     # so whatever follows it up to a separator belongs to the label, except a backslash
     # that does not escape a quote: that starts an escape `repr` wrote as a separator. The
-    # separator is `:`, `=`, a comma as in `('token', ...)`, or only a space. A network
-    # name identifies a person's home or workplace. The label's tail is bounded and
-    # possessive, so a long run is never rescanned.
+    # separator is `:`, `=`, a comma as in `('token', ...)`, or only whitespace, including a
+    # line break: pretty-printed JSON puts the value on the next line, and stopping at the
+    # break logged it there. A network name identifies a person's home or workplace. The
+    # label's tail and the separator run are possessive, and the tail is bounded, so a long
+    # run is never rescanned and no backtracking state accumulates along it.
     (
         re.compile(
             rf"(?i)((?:{_SENSITIVE_WORDS})(?:[^\s:=,\\]|\\+[\"']){{0,64}}+)"
-            rf"((?:(?![\r\n]){_SEP}|[:=,])+){_REST_OF_LINE}"
+            rf"((?:{_SEP}|[:=,])++){_REST_OF_LINE}"
         ),
         r"\1\2" + REDACTED,
     ),

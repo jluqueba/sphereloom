@@ -280,9 +280,15 @@ class Workspace:
         except OSError as exc:
             raise _translate_os_error(exc, during="create the download file") from exc
 
-        os.close(handle)
         temp_path = Path(temp_name)
         try:
+            # Closing the descriptor is an operating-system touchpoint too: a delayed write
+            # error can surface here. It runs inside the cleanup block, so the file mkstemp
+            # just created is removed rather than left behind by a raw exception.
+            try:
+                os.close(handle)
+            except OSError as exc:
+                raise _translate_os_error(exc, during="create the download file") from exc
             # Writing the payload is where a full disk is most likely to be noticed, so a
             # storage refusal from the caller's body gets the same translation as one from
             # the calls around it. Only storage errnos are translated: the body also does

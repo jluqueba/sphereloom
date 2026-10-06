@@ -209,6 +209,10 @@ def test_no_shape_of_quoting_or_escaping_lets_a_value_through(raw: str, words: l
         # An escape `repr` wrote in place of the separator.
         r"['token\thunter2SECRET']",
         r"""{'body': '{\\"password\\": \\"hunter2SECRET\\"}'}""",
+        # A real line break between the label and its value, as pretty-printed JSON writes.
+        "password:\nhunter2SECRET",
+        '{\n  "password":\n    "hunter2SECRET"\n}',
+        "token\r\n hunter2SECRET",
     ],
 )
 def test_a_sensitive_word_anywhere_in_a_label_redacts_its_value(raw: str) -> None:

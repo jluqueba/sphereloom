@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import errno
+import os
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+import sphereloom.security.workspace as workspace_module
 from sphereloom.domain.errors import (
     InternalError,
     PathJailError,
@@ -348,7 +351,7 @@ def test_the_workspace_root_itself_is_not_a_destination(workspace: Workspace, na
         (errno.ENOMEM, InternalError),
     ],
 )
-@pytest.mark.parametrize("failing_call", ["mkdir", "mkstemp", "replace", "write"])
+@pytest.mark.parametrize("failing_call", ["mkdir", "mkstemp", "close", "replace", "write"])
 def test_a_filesystem_failure_keeps_its_own_taxonomy(
     workspace: Workspace,
     monkeypatch: pytest.MonkeyPatch,
@@ -375,6 +378,14 @@ def test_a_filesystem_failure_keeps_its_own_taxonomy(
         monkeypatch.setattr(Path, "mkdir", refuse)
     elif failing_call == "mkstemp":
         monkeypatch.setattr(tempfile, "mkstemp", refuse)
+    elif failing_call == "close":
+        # Only the workspace module's view of `os` is replaced, and the descriptor is really
+        # closed before the refusal, so nothing else in the process is affected or leaked.
+        def close_then_refuse(handle: int) -> None:
+            os.close(handle)
+            refuse()
+
+        monkeypatch.setattr(workspace_module, "os", SimpleNamespace(close=close_then_refuse))
     elif failing_call == "replace":
         monkeypatch.setattr(Path, "replace", refuse)
     else:

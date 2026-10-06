@@ -20,15 +20,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A credential or Wi-Fi network name is redacted from its label to the end of the line,
   wherever the sensitive word sits in the label (`access_token`, `accessToken`,
   `headers['Authorization']`, `token.get_secret_value()`) and whatever follows it (`:`,
-  `=`, a comma or a space). Any absolute path -- a drive with either slash, a network
-  share under any server name or prefix, or any POSIX directory other than the camera's
-  `/osc/` endpoints -- is redacted through a closing quote it cannot share with the path,
-  or else to the end of the line. Redaction previously recognised a fixed set of label
-  and path shapes and tried to find where a value ended, and stopped too early on spaces,
-  escaped quotes, a quote of the other kind, the single-quoted keys `repr` gives a
-  dictionary, camel-case labels, and paths under `/media` or on a network share, leaving
-  the rest in the log. Paths are now redacted before query strings so that one cannot
-  hide the other.
+  `=`, a comma, a space or a line break). Any absolute path -- a drive with either slash,
+  a network share under any server name or prefix, or any POSIX directory other than the
+  camera's `/osc/` endpoints -- is redacted through a closing quote it cannot share with
+  the path, or else to the end of the line. Redaction previously recognised a fixed set
+  of label and path shapes and tried to find where a value ended, and stopped too early
+  on spaces, line breaks, escaped quotes, a quote of the other kind, the single-quoted
+  keys `repr` gives a dictionary, camel-case labels, and paths under `/media` or on a
+  network share, leaving the rest in the log. Paths are now redacted before query
+  strings so that one cannot hide the other.
 - Log records are bounded before they are redacted or formatted, and every cut ends on a
   word boundary so that a truncated value never leaves a fragment of a secret too short
   for redaction to recognise.
@@ -90,7 +90,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   traversal, absolute paths and symlinks that escape the root, with an atomic-write helper
   so an interrupted transfer never publishes a partial file. A disk that fills up while
   the file is being written is reported as `storage_full`, the same as one that fills up
-  while the file is created or moved into place.
+  while the file is created or moved into place, and a failure while closing the new file
+  is translated and cleaned up like any other.
 - Structured stderr logging with a redaction filter for credentials, network names, query
   strings and absolute paths, keeping stdout free for the MCP protocol.
 - Error taxonomy with one exception class per code and a single envelope renderer, plus an
