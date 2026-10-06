@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import json
 import time
+import tracemalloc
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -1445,3 +1446,31 @@ async def test_a_4xx_error_envelope_still_reaches_the_runner_with_its_context() 
         await http.aclose()
 
     assert "camera.setOptions" in caught.value.message
+
+
+async def test_a_body_sent_a_byte_at_a_time_costs_memory_in_proportion_to_its_size() -> None:
+    """Keeping each chunk as its own object makes memory track the number of reads.
+
+    Two hundred thousand one-byte chunks held in a list cost several megabytes in object
+    overhead for a body of two hundred kilobytes. Allocation is measured, not time, so the
+    result does not depend on how loaded the machine is.
+    """
+    payload = b'{"a": "' + b"x" * 200_000 + b'"}'
+
+    class Dribble(httpx.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            for index in range(len(payload)):
+                yield payload[index : index + 1]
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, stream=Dribble()))
+    http = OscHttpClient("http://192.168.42.1", transport=transport)
+    tracemalloc.start()
+    try:
+        result = await http.state()
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+        await http.aclose()
+
+    assert len(result["a"]) == 200_000
+    assert peak < 4_000_000

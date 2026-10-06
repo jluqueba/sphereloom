@@ -484,16 +484,17 @@ class OscHttpClient:
                 raise too_large()
             return response.content
 
-        chunks: list[bytes] = []
-        total = 0
+        # One growing buffer rather than a list of chunks: a peer that dribbles the body a
+        # byte at a time would otherwise leave millions of small objects resident, so memory
+        # would track the number of reads instead of the byte limit.
+        body = bytearray()
         # Raw bytes, so the limit counts what arrived on the wire rather than what a
         # decoder made of it.
         async for chunk in response.aiter_raw():
-            total += len(chunk)
-            if total > MAX_RESPONSE_BYTES:
+            if len(body) + len(chunk) > MAX_RESPONSE_BYTES:
                 raise too_large()
-            chunks.append(chunk)
-        return b"".join(chunks)
+            body.extend(chunk)
+        return bytes(body)
 
     async def _send_with_retries(
         self,

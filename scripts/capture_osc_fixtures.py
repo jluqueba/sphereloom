@@ -266,24 +266,25 @@ def _request_json(client: httpx.Client, method: str, url: str, **kwargs: Any) ->
             )
             raise CaptureError(message)
 
-        chunks: list[bytes] = []
-        total = 0
+        # One growing buffer rather than a list of chunks: a peer that sends the body a byte
+        # at a time would otherwise leave millions of small objects resident, so memory
+        # would track the number of reads instead of the byte limit.
+        body = bytearray()
         # Raw bytes, so the bound counts what arrived rather than what a decoder made of it.
         # A body already in memory, as an in-process transport may supply, has nothing left
         # to stream; after the encoding check it is the raw body, bounded the same way.
         source = [response.content] if response.is_stream_consumed else response.iter_raw()
         for chunk in source:
-            total += len(chunk)
-            if total > MAX_RESPONSE_BYTES:
+            if len(body) + len(chunk) > MAX_RESPONSE_BYTES:
                 message = (
                     f"The camera sent more than {MAX_RESPONSE_BYTES} bytes in one response, "
                     "far beyond anything the documented commands return."
                 )
                 raise CaptureError(message)
-            chunks.append(chunk)
+            body.extend(chunk)
 
     try:
-        return strict_json_loads(b"".join(chunks))
+        return strict_json_loads(bytes(body))
     except (ValueError, RecursionError) as exc:
         message = f"The camera sent a response that is not usable JSON: {exc}"
         raise CaptureError(message) from exc

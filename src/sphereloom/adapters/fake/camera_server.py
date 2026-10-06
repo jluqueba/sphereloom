@@ -106,16 +106,16 @@ async def _request_object(request: Request) -> dict[str, Any] | None:
     `except` clause, and one simply too large to hold, since `request.json()` reads
     whatever arrives before anything gets to inspect it.
     """
-    chunks: list[bytes] = []
-    total = 0
+    # One growing buffer rather than a list of chunks, so a client that sends its body a
+    # byte at a time costs memory in proportion to the bytes, not to the number of reads.
+    body = bytearray()
     async for chunk in request.stream():
-        total += len(chunk)
-        if total > MAX_REQUEST_BYTES:
+        if len(body) + len(chunk) > MAX_REQUEST_BYTES:
             return None
-        chunks.append(chunk)
+        body.extend(chunk)
 
     try:
-        payload = strict_json_loads(b"".join(chunks))
+        payload = strict_json_loads(bytes(body))
     except (ValueError, RecursionError):
         return None
     return payload if isinstance(payload, dict) else None
