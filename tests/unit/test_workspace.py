@@ -348,7 +348,7 @@ def test_the_workspace_root_itself_is_not_a_destination(workspace: Workspace, na
         (errno.ENOMEM, InternalError),
     ],
 )
-@pytest.mark.parametrize("failing_call", ["mkdir", "mkstemp", "replace"])
+@pytest.mark.parametrize("failing_call", ["mkdir", "mkstemp", "replace", "write"])
 def test_a_filesystem_failure_keeps_its_own_taxonomy(
     workspace: Workspace,
     monkeypatch: pytest.MonkeyPatch,
@@ -358,25 +358,55 @@ def test_a_filesystem_failure_keeps_its_own_taxonomy(
 ) -> None:
     """Translating every OSError to a path error told a caller with a full disk to rename.
 
-    The cause is what distinguishes them, and all three operating-system touchpoints share
-    one mapping so they cannot diverge.
+    The cause is what distinguishes them, and every operating-system touchpoint shares one
+    mapping so they cannot diverge. A write runs in the caller's body, where only a storage
+    refusal is the workspace's to translate; any other errno is re-raised as it came.
     """
+    if failing_call == "write" and number not in {errno.ENOSPC, errno.EDQUOT}:
+        expected = OSError
+    raised: list[OSError] = []
 
     def refuse(*args: object, **kwargs: object) -> object:
-        raise OSError(number, "refused")
+        error = OSError(number, "refused")
+        raised.append(error)
+        raise error
 
     if failing_call == "mkdir":
         monkeypatch.setattr(Path, "mkdir", refuse)
     elif failing_call == "mkstemp":
         monkeypatch.setattr(tempfile, "mkstemp", refuse)
-    else:
+    elif failing_call == "replace":
         monkeypatch.setattr(Path, "replace", refuse)
+    else:
+        monkeypatch.setattr(Path, "write_bytes", refuse)
 
     with (
-        pytest.raises(expected),
+        pytest.raises(expected) as caught,
         workspace.atomic_write("downloads/clip.insv") as (
             temp_path,
             _destination,
         ),
     ):
         temp_path.write_bytes(b"data")
+
+    if expected is OSError:
+        # Re-raised as it came: `OSError(2, ...)` is a FileNotFoundError, so identity is the
+        # only check that tells "untouched" from "rewrapped".
+        assert caught.value is raised[0]
+    assert not list(workspace.root.rglob("*.partial"))
+
+
+def test_a_network_error_inside_the_write_reaches_the_caller_unchanged(
+    workspace: Workspace,
+) -> None:
+    """The body also does network I/O; a reset connection is not a workspace failure."""
+    reset = ConnectionResetError(errno.ECONNRESET, "reset by peer")
+
+    with (
+        pytest.raises(ConnectionResetError) as caught,
+        workspace.atomic_write("downloads/clip.insv"),
+    ):
+        raise reset
+
+    assert caught.value is reset
+    assert not list(workspace.root.rglob("*.partial"))

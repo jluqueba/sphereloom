@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import PurePosixPath
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
 import pytest
@@ -67,6 +67,211 @@ def test_relative_workspace_paths_survive() -> None:
     cleaned = redact("saved to downloads/clip.insv")
 
     assert cleaned == "saved to downloads/clip.insv"
+
+
+@pytest.mark.parametrize(
+    ("raw", "words"),
+    [
+        ('password: "correct horse battery staple" done', ["correct", "horse", "staple"]),
+        ("token='open sesame now' done", ["open", "sesame", "now"]),
+        ('{"ssid": "My Home Net", "x": 1}', ["My", "Home", "Net"]),
+        ('connected to ssid="X5 ABC123.OSC"', ["X5", "ABC123"]),
+        ('secret: "cut short by the bound', ["cut", "short", "bound"]),
+        (r'saved to "C:\Users\John Smith\holiday trip.mp4" ok', ["John", "Smith", "holiday"]),
+        ("saved to '/home/john smith/holiday trip.mp4' ok", ["john", "smith", "holiday"]),
+        # `repr` switches to double quotes exactly when a string contains an apostrophe.
+        (r'saved to "C:\\Users\\Mary O\'Brien\\My Videos\\x.mp4"', ["Mary", "Brien", "Videos"]),
+        ('saved to "/home/o\'brien smith/x.mp4"', ["brien", "smith"]),
+        # JSON and `repr` escape a quote inside a string rather than ending it.
+        (r'{"password": "ab\"cd ef gh"}', ["ab", "cd", "ef", "gh"]),
+        (r"token='it\'s a secret'", ["it", "secret"]),
+        # `repr` renders a dict's keys in single quotes.
+        ("cfg {'password': 'correct horse battery'}", ["correct", "horse", "battery"]),
+        ("cfg {'ssid': 'My Home Net'}", ["My", "Home", "Net"]),
+    ],
+    ids=[
+        "double-quoted-credential",
+        "single-quoted-credential",
+        "json-ssid",
+        "ssid-assignment",
+        "unterminated-quote",
+        "quoted-windows-path",
+        "quoted-posix-path",
+        "windows-path-with-apostrophe",
+        "posix-path-with-apostrophe",
+        "escaped-double-quote",
+        "escaped-single-quote",
+        "repr-dict-credential",
+        "repr-dict-ssid",
+    ],
+)
+def test_no_word_of_a_quoted_value_survives(raw: str, words: list[str]) -> None:
+    """A quoted value may contain spaces; stopping at the first one leaked the rest."""
+    cleaned = redact(raw)
+
+    assert REDACTED in cleaned
+    for word in words:
+        assert word not in cleaned
+
+
+def test_a_traceback_line_keeps_its_location() -> None:
+    """A quoted path ends at a closing quote followed by a delimiter, so diagnosis survives."""
+    cleaned = redact(r'  File "C:\Users\John Smith\app.py", line 12, in fetch')
+
+    assert "John" not in cleaned
+    assert "Smith" not in cleaned
+    assert cleaned.endswith(", line 12, in fetch")
+
+
+@pytest.mark.parametrize(
+    ("raw", "words"),
+    [
+        # The query-string pattern once ran first and consumed the escape or drive letter
+        # the path was recognised by.
+        (r'{"file": "/home/john/a?b\" John Smith diary"}', ["John", "Smith", "diary"]),
+        # A quote that a backslash escapes is part of the path even before a delimiter.
+        (r'"/home/john/a\", John Smith/x"', ["John", "Smith"]),
+        (r"['/home/john/what?it\'s \"John Smith\" diary']", ["John", "Smith", "diary"]),
+        (r'"\\?\C:\Users\John Smith\clip.mp4"', ["John", "Smith", "clip"]),
+        (r"['\\\\?\\C:\\Users\\John Smith\\clip.mp4']", ["John", "Smith", "clip"]),
+        # `Path.as_posix()` writes a drive path with forward slashes.
+        ('"D:/Clips/John Smith/clip.mp4"', ["John", "Smith", "clip"]),
+        ("saved to D:/Clips/John Smith/clip.mp4", ["John", "Smith", "clip"]),
+        # An unquoted path with a space has no visible end.
+        (r"saved to C:\Users\John Smith\clip.mp4", ["John", "Smith", "clip"]),
+        # A quote inside a path that no delimiter follows does not end it.
+        ("saved to '/home/o'brien smith/x.mp4' ok", ["brien", "smith"]),
+        # An escaped opening quote, from `repr` of JSON or of a string with both quotes.
+        (r"""['"password": \'correct horse\'']""", ["correct", "horse"]),
+        (r"""['"ssid": \'Home Net 5G\'']""", ["Home", "Net"]),
+        (r"""['{\'password\': "correct horse"}']""", ["correct", "horse"]),
+        (r'"{\"password\": \"correct horse\"}"', ["correct", "horse"]),
+        # JSON inside `repr`: two levels of escaping.
+        (r"""{'body': '{"password": "a\\"b correct horse"}'}""", ["correct", "horse"]),
+        # A backslash at the very end once made the quoted match fail outright.
+        ('password: "correct horse battery\\', ["correct", "horse", "battery"]),
+        ('"C:\\Users\\John Smith\\', ["John", "Smith"]),
+        # A label at the end of a longer name.
+        ("{'access_token': 'abc def ghi'}", ["abc", "def", "ghi"]),
+        ("{'wifi_ssid': 'Home Net'}", ["Home", "Net"]),
+    ],
+    ids=[
+        "query-before-escaped-quote",
+        "escaped-quote-before-delimiter",
+        "query-before-apostrophe",
+        "extended-length-prefix",
+        "extended-length-prefix-repr",
+        "drive-with-forward-slashes",
+        "unquoted-drive-with-forward-slashes",
+        "unquoted-path-with-space",
+        "apostrophe-inside-single-quoted-path",
+        "escaped-opening-quote",
+        "escaped-opening-quote-ssid",
+        "escaped-key-quote",
+        "json-encoded-json",
+        "json-inside-repr",
+        "trailing-backslash-credential",
+        "trailing-backslash-path",
+        "access-token",
+        "wifi-ssid",
+    ],
+)
+def test_no_shape_of_quoting_or_escaping_lets_a_value_through(raw: str, words: list[str]) -> None:
+    """Where a value ends is uncertain once quotes and escapes nest; redaction must not guess."""
+    cleaned = redact(raw)
+
+    assert REDACTED in cleaned
+    for word in words:
+        assert word not in cleaned
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "accessToken=hunter2SECRET",
+        '{"accessToken": "hunter2SECRET"}',
+        '{"wifiSsid": "hunter2SECRET"}',
+        '{"wifiPassword": "hunter2SECRET"}',
+        "clientSecret: hunter2SECRET",
+        "secret_key=hunter2SECRET",
+        "aws_secret_access_key=hunter2SECRET",
+        "tokens=['hunter2SECRET']",
+        "[('token', 'hunter2SECRET')]",
+        "('password', 'hunter2SECRET')",
+        "Joined SSID 'hunter2SECRET'",
+        "Authorization: Basic hunter2SECRET",
+        "credentials=hunter2SECRET",
+        # The debug form of an f-string and other expressions around the label.
+        "headers['Authorization']='hunter2SECRET'",
+        "settings['http_token']='hunter2SECRET'",
+        "http_token.get_secret_value()='hunter2SECRET'",
+        "options['wifi_password'] = 'hunter2SECRET'",
+        # An escape `repr` wrote in place of the separator.
+        r"['token\thunter2SECRET']",
+        r"""{'body': '{\\"password\\": \\"hunter2SECRET\\"}'}""",
+    ],
+)
+def test_a_sensitive_word_anywhere_in_a_label_redacts_its_value(raw: str) -> None:
+    """Enumerating label shapes left one more each time; the word itself is the signal."""
+    assert "hunter2SECRET" not in redact(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        r"open \\fileserver\home\john\x.insv",
+        r"open ['\\\\fileserver\\home\\john\\x.insv']",
+        "open /media/john/X5/VID.insv",
+        "open /run/media/john/X5/VID.insv",
+        "open /mnt/c/Users/john/x.insv",
+        "open /data/john/x.insv",
+        "open file:///home/john/x.insv",
+        r"open ['first\n/data/john/x.insv']",
+        "open /Volumes/john/x.insv",
+        r"open \\?\UNC\nas\share\john smith\x.mp4",
+        r"open \\.\UNC\nas\share\john smith\x.mp4",
+        r"open \\server@SSL@443\DavWWWRoot\john\x.mp4",
+        # A `WindowsPath` repr writes a share with forward slashes on every platform.
+        f"saved {PureWindowsPath(r'\\nas\share\john smith\x.insv')!r}",
+        f"files {[PureWindowsPath(r'\\nas\share\john smith\x.insv')]}",
+        "open file://nas/share/john/x.insv",
+    ],
+)
+def test_any_absolute_path_is_redacted(raw: str) -> None:
+    """A workspace can live anywhere, so a list of personal roots always missed one."""
+    assert "john" not in redact(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "POST http://192.168.42.1/osc/commands/execute",
+        "POST /osc/commands/execute",
+        "GET http://192.168.42.1:80/DCIM/Camera01/VID_001.insv",
+        "GET https://example.com//double/slash",
+        "saved to downloads/clip.insv",
+        "camera state is idle, battery 0.85",
+        "took 12/30 attempts",
+    ],
+)
+def test_protocol_text_survives_redaction(raw: str) -> None:
+    """Over-redaction is the accepted cost, but not of the text that diagnoses the camera."""
+    assert redact(raw) == raw
+
+
+def test_a_dict_argument_has_its_secrets_redacted(capsys: pytest.CaptureFixture[str]) -> None:
+    """The whole pipeline: a dict argument is rendered by `repr`, then redacted."""
+    configure_logging(level="INFO", redaction=True)
+
+    logging.getLogger("sphereloom.test").info(
+        "cfg %s %r",
+        {"password": "correct horse battery", "ssid": "My Home Net"},
+        r"C:\Users\Mary O'Brien\My Videos\x.mp4",
+    )
+
+    line = capsys.readouterr().err
+    for word in ("correct", "horse", "battery", "Home", "Net", "Mary", "Brien", "Videos"):
+        assert word not in line
 
 
 def test_the_filter_cleans_structured_context() -> None:
@@ -235,10 +440,13 @@ def test_redaction_only_ever_sees_bounded_text(
 def test_a_cut_never_leaves_a_fragment_of_a_secret(
     capsys: pytest.CaptureFixture[str], offset: int
 ) -> None:
-    """Bounding runs before redaction, so where the cut lands decides what is logged.
+    """Bounding runs before redaction, so where the cut lands could decide what is logged.
 
     A plain slice that falls a few characters into a bearer token leaves a prefix shorter
-    than any pattern recognises. Every offset from one to eight characters is tried.
+    than a pattern for the token itself recognises. Two guards now cover it -- the cut backs
+    off to a word boundary, which `test_payloads` checks directly, and the `Bearer` label
+    redacts to the end of the line -- and this checks the outcome end to end at every offset
+    from one to eight characters.
     """
     token = "SECRETTOKENVALUE0123456789"
     filler = "x " * ((sphereloom_logging.MAX_MESSAGE_LENGTH - len("Bearer ") - offset) // 2)
@@ -507,7 +715,9 @@ def test_a_cut_after_repr_leaves_no_fragment_of_a_secret(
 ) -> None:
     """`repr` writes whitespace as escapes, so a cut found no whitespace to back off to.
 
-    The padding is sized so the rendered list is cut a few characters into the token.
+    The padding is sized so the rendered list is cut a few characters into the token. The
+    cut's handling of escapes is checked directly in `test_payloads`; this checks that the
+    logged line carries no fragment either way.
     """
     member = "\n" * 992 + ".Bearer\nSECRETTOKENVALUE"
     configure_logging(level="INFO", redaction=True)

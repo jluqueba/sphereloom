@@ -50,6 +50,9 @@ MAX_COMPONENT_BYTES = 255
 #: download instead of as the PathJailError this class promises.
 TEMP_NAME_OVERHEAD = 18
 
+#: Errors that mean the disk, not the name, refused the write.
+_STORAGE_ERRNOS = frozenset({errno.ENOSPC, errno.EDQUOT})
+
 
 def _translate_os_error(exc: OSError, *, during: str) -> SphereLoomError:
     """Map a filesystem refusal to the taxonomy entry that matches its cause.
@@ -59,7 +62,7 @@ def _translate_os_error(exc: OSError, *, during: str) -> SphereLoomError:
     already has a code for. The errno is what distinguishes them, and all three
     operating-system touchpoints go through here so the mapping cannot diverge between them.
     """
-    if exc.errno in {errno.ENOSPC, errno.EDQUOT}:
+    if exc.errno in _STORAGE_ERRNOS:
         return StorageFullError(
             f"There is not enough space in the workspace to {during}. Free some space and retry.",
         )
@@ -280,7 +283,17 @@ class Workspace:
         os.close(handle)
         temp_path = Path(temp_name)
         try:
-            yield temp_path, destination
+            # Writing the payload is where a full disk is most likely to be noticed, so a
+            # storage refusal from the caller's body gets the same translation as one from
+            # the calls around it. Only storage errnos are translated: the body also does
+            # network I/O, and a connection reset is an `OSError` that says nothing about
+            # the workspace and must reach the caller as it was raised.
+            try:
+                yield temp_path, destination
+            except OSError as exc:
+                if exc.errno in _STORAGE_ERRNOS:
+                    raise _translate_os_error(exc, during="write the download") from exc
+                raise
             # The rename is the third place the operating system gets the final say, and
             # guarding only the first two moved the failure here rather than removing it.
             # It can still run out of space: a rename allocates directory metadata.

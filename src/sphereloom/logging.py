@@ -49,33 +49,88 @@ MAX_CONTEXT_NODES = 500
 #: printable ASCII, so treating every escape as a separator only covers what it hid.
 _SEP = r"(?:\s|\\[ntr]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})"
 
+#: Words that mark a secret, whether they name a structured key or label a value in text.
+#: One list serves both, so the two cannot drift apart.
+_SENSITIVE_WORDS = r"token|secret|passw(?:or)?d|api[_-]?key|ssid|authori[sz]ation|bearer|credential"
+
 #: Structured keys whose values are secrets whatever they look like. The text patterns
 #: below find a secret by its label, and in a structured record the label is the key, not
 #: part of the value, so `{"token": "abc"}` would otherwise be logged as it is.
-_SENSITIVE_KEY = re.compile(
-    r"(?i)(token|secret|passw(or)?d|api[_-]?key|ssid|authori[sz]ation|bearer|credential)"
+_SENSITIVE_KEY = re.compile(rf"(?i)(?:{_SENSITIVE_WORDS})")
+
+#: Where an absolute path begins: a drive letter followed by one slash of either kind (two
+#: forward slashes are a URL scheme), a network share under any server name -- including
+#: the `\\?\UNC\` and `\\.\UNC\` prefixes, WebDAV's `server@SSL@443`, the forward slashes
+#: of a `WindowsPath` repr and a `file://` URI -- or a POSIX directory. The camera's own
+#: `/osc/` endpoints are protocol, not a place on anyone's disk.
+_DRIVE = r"[a-z]:(?:\\|/(?!/))"
+_SHARE = r"(?:\\{2,4}|(?:(?<![\w:/])|(?<=file:))//)[^\\/\s\"',]+[\\/]"
+_POSIX_DIR = r"/(?!osc/)[\w.$~-]+/"
+_PATH_START = rf"(?:{_DRIVE}|{_SHARE}|{_POSIX_DIR})"
+
+#: Before a POSIX path: anything but a character that would make it the tail of a URL or
+#: of a relative path, or an escape `repr` wrote in place of a separator. Each escape needs
+#: its own lookbehind, since a lookbehind has a fixed width.
+_POSIX_BOUNDARY = (
+    r"(?:(?<![\w.:/])|(?<=\\[ntr])|(?<=\\x[0-9a-fA-F]{2})"
+    r"|(?<=\\u[0-9a-fA-F]{4})|(?<=\\U[0-9a-fA-F]{8}))"
 )
 
+#: Directories that hold a person's files, which are redacted wherever they appear, even
+#: as the tail of a `file:///` URL.
+_PERSONAL_DIR = r"/(?:home|Users|root|media|Volumes)/"
+
+#: The rest of the current line.
+_REST_OF_LINE = r"[^\r\n]*"
+
 #: Patterns stripped from every log record when redaction is enabled.
+#:
+#: Redaction is a guard, not a parser. A value can be quoted either way, contain the other
+#: quote, carry escapes from JSON or `repr` or both, or be cut short by bounding, and every
+#: attempt to find where such a value ends from inside a regex left some shape that ended
+#: it early and logged the rest. So where the end of a value is uncertain, the rest of the
+#: line goes with it: over-redaction costs some context, a leak cannot be taken back. No
+#: pattern can fail once it has started to match, so none rescans the text it has read.
 _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # Bearer tokens and confirmation tokens.
     (re.compile(rf"(?i)\b(bearer{_SEP}+)[A-Za-z0-9._~+/-]{{8,}}=*"), r"\1" + REDACTED),
+    # A labelled credential or Wi-Fi network name, from its label to the end of the line.
+    # The sensitive word may sit anywhere in an expression -- `access_token`, `accessToken`,
+    # `headers['Authorization']`, `token.get_secret_value()`, an escaped or quoted key --
+    # so whatever follows it up to a separator belongs to the label, except a backslash
+    # that does not escape a quote: that starts an escape `repr` wrote as a separator. The
+    # separator is `:`, `=`, a comma as in `('token', ...)`, or only a space. A network
+    # name identifies a person's home or workplace. The label's tail is bounded and
+    # possessive, so a long run is never rescanned.
     (
         re.compile(
-            rf"(?i)\b(token|secret|password|api[_-]?key)(\"?{_SEP}*[:=]{_SEP}*\"?)[^\s,\"'}}]+"
+            rf"(?i)((?:{_SENSITIVE_WORDS})(?:[^\s:=,\\]|\\+[\"']){{0,64}}+)"
+            rf"((?:(?![\r\n]){_SEP}|[:=,])+){_REST_OF_LINE}"
         ),
         r"\1\2" + REDACTED,
     ),
-    # Wi-Fi network names, which identify a person's home or workplace.
-    (re.compile(rf"(?i)\b(ssid)(\"?{_SEP}*[:=]{_SEP}*\"?)[^\s,\"'}}]+"), r"\1\2" + REDACTED),
+    # Absolute paths leak usernames and library layout, and a directory such as
+    # "John Smith" contains a space. A quoted path ends at the first matching quote that no
+    # backslash escapes and that a delimiter follows, which keeps the `line 12, in f` of a
+    # traceback; a quote that could belong to the path does not end it, and with no such
+    # quote the path runs to the end of the line. An unquoted path always does.
+    *(
+        (
+            re.compile(
+                rf"(?i)({quote})(?={_PATH_START}){_REST_OF_LINE}?"
+                rf"(?:(?<!\\)({quote})(?=[,:)\]}}]|[\r\n]|$)|(?=[\r\n]|$))"
+            ),
+            r"\1" + REDACTED + r"\2",
+        )
+        for quote in ('"', "'")
+    ),
+    (re.compile(rf"(?i)(?:{_DRIVE}|(?<!\\){_SHARE}|{_PERSONAL_DIR}){_REST_OF_LINE}"), REDACTED),
+    (re.compile(rf"{_POSIX_BOUNDARY}{_POSIX_DIR}{_REST_OF_LINE}"), REDACTED),
     # Query strings can carry credentials and file identifiers. Each run is consumed whole:
-    # a cap on its length left everything after the cap in the log. Every record is
-    # bounded before it is redacted, and a single character class cannot backtrack, so
-    # matching a whole run costs no more than reading it.
+    # a cap on its length left everything after the cap in the log. Paths are redacted
+    # first, because this pattern would otherwise consume the backslashes and drive letters
+    # they are recognised by.
     (re.compile(r"(\?)[^\s\"']+"), r"\1" + REDACTED),
-    # Absolute paths leak usernames and library layout.
-    (re.compile(r"(?i)\b[a-z]:\\[^\s\"',]+"), REDACTED),
-    (re.compile(r"(?<![\w.])/(?:home|Users|root|var|tmp)/[^\s\"',]+"), REDACTED),
 )
 
 
