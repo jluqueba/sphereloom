@@ -1509,3 +1509,30 @@ async def test_an_error_envelope_with_a_200_from_state_is_an_error() -> None:
             await http.state()
     finally:
         await http.aclose()
+
+
+async def test_a_status_poll_never_overlaps_another_command() -> None:
+    """The vendor allows one command in flight. A poll that skipped the command lock could
+    overlap an `execute` on the same client, or another runner's poll."""
+    in_flight = 0
+    most = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal in_flight, most
+        in_flight += 1
+        most = max(most, in_flight)
+        await asyncio.sleep(0.05)
+        in_flight -= 1
+        return _json_response(200, {"name": "camera.getOptions", "state": "done", "results": {}})
+
+    http = OscHttpClient("http://192.168.42.1", transport=httpx.MockTransport(handler))
+    try:
+        await asyncio.gather(
+            http.execute("camera.getOptions"),
+            http.command_status("cmd-1"),
+            http.command_status("cmd-2"),
+        )
+    finally:
+        await http.aclose()
+
+    assert most == 1

@@ -514,3 +514,15 @@ def test_a_cut_after_repr_leaves_no_fragment_of_a_secret(
     logging.getLogger("sphereloom.test").info("%s", [member])
 
     assert "SECRE" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ["https://camera.local/x?", "/home/", "C:\\Users\\"],
+    ids=["query", "posix-path", "windows-path"],
+)
+def test_a_long_query_or_path_is_redacted_to_its_end(prefix: str) -> None:
+    """The patterns stopped after 512 characters and left the rest of the run in the log."""
+    text = prefix + "a" * 600 + "SECRETTOKENVALUE"
+
+    assert "SECRETTOKENVALUE" not in redact(text)

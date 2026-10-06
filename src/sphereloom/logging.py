@@ -68,11 +68,14 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
     # Wi-Fi network names, which identify a person's home or workplace.
     (re.compile(rf"(?i)\b(ssid)(\"?{_SEP}*[:=]{_SEP}*\"?)[^\s,\"'}}]+"), r"\1\2" + REDACTED),
-    # Query strings can carry credentials and file identifiers.
-    (re.compile(r"(\?)[^\s\"']{1,512}"), r"\1" + REDACTED),
+    # Query strings can carry credentials and file identifiers. Each run is consumed whole:
+    # a cap on its length left everything after the cap in the log. Every record is
+    # bounded before it is redacted, and a single character class cannot backtrack, so
+    # matching a whole run costs no more than reading it.
+    (re.compile(r"(\?)[^\s\"']+"), r"\1" + REDACTED),
     # Absolute paths leak usernames and library layout.
-    (re.compile(r"(?i)\b[a-z]:\\[^\s\"',]{1,512}"), REDACTED),
-    (re.compile(r"(?<![\w.])/(?:home|Users|root|var|tmp)/[^\s\"',]{1,512}"), REDACTED),
+    (re.compile(r"(?i)\b[a-z]:\\[^\s\"',]+"), REDACTED),
+    (re.compile(r"(?<![\w.])/(?:home|Users|root|var|tmp)/[^\s\"',]+"), REDACTED),
 )
 
 

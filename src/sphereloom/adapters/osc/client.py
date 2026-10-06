@@ -270,16 +270,18 @@ class OscHttpClient:
     async def command_status(self, command_id: str) -> dict[str, Any]:
         """Poll a previously accepted command.
 
-        Not taken under the command lock: polling is a read, and holding the lock while
-        waiting for a capture would block every other call for the duration of the capture.
+        Taken under the command lock like any other command, but only for the duration of
+        this one request: the lock is released between polls, so a long capture does not
+        block other calls while it runs, and a poll can never overlap another command.
         """
-        return await self._request_json(
-            "POST",
-            STATUS_PATH,
-            json={"id": command_id},
-            retry_server_errors=True,
-            vendor_errors_to_caller=True,
-        )
+        async with self._command_lock:
+            return await self._request_json(
+                "POST",
+                STATUS_PATH,
+                json={"id": command_id},
+                retry_server_errors=True,
+                vendor_errors_to_caller=True,
+            )
 
     @asynccontextmanager
     async def stream(self, url: str) -> AsyncIterator[httpx.Response]:
