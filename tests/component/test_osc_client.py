@@ -1474,3 +1474,38 @@ async def test_a_body_sent_a_byte_at_a_time_costs_memory_in_proportion_to_its_si
 
     assert len(result["a"]) == 200_000
     assert peak < 4_000_000
+
+
+@pytest.mark.parametrize("status", [200, 400])
+async def test_an_error_envelope_from_info_is_an_error_whatever_the_status(status: int) -> None:
+    """The vendor reports some failures with a 200. Judged by status alone, `info()` cached
+    an error envelope as the camera's identity."""
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return _json_response(status, {"error": {"code": "invalidParameterValue", "message": "no"}})
+
+    http = OscHttpClient("http://192.168.42.1", transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(InvalidArgumentError):
+            await http.info()
+        with pytest.raises(InvalidArgumentError):
+            await http.info()
+    finally:
+        await http.aclose()
+
+    assert calls == 2
+
+
+async def test_an_error_envelope_with_a_200_from_state_is_an_error() -> None:
+    transport = httpx.MockTransport(
+        lambda request: _json_response(200, {"error": {"code": "unexpected", "message": "no"}})
+    )
+    http = OscHttpClient("http://192.168.42.1", transport=transport)
+    try:
+        with pytest.raises(InternalError):
+            await http.state()
+    finally:
+        await http.aclose()
