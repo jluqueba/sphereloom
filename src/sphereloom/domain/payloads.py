@@ -45,9 +45,10 @@ MAX_INT_BITS = 4096
 #: output, so a field of nothing but spaces would be scanned in full whatever the limit.
 MAX_SCAN_MULTIPLE = 16
 
-#: How far back from a limit `cut_text` looks for whitespace. It must be at least as long
-#: as the shortest run a log redaction pattern needs -- eight characters, for a bearer
-#: token -- so that a run too long to back out of is always long enough to be recognised.
+#: How far back from a limit `cut_text` looks for a boundary: whitespace, or a backslash
+#: that starts an escape in `repr` output. It must be at least as long as the shortest run
+#: a log redaction pattern needs -- eight characters, for a bearer token -- so that a run
+#: too long to back out of is always long enough to be recognised.
 CUT_SEARCH = 64
 
 #: Stands in for anything that was removed, truncated or could not be represented.
@@ -141,10 +142,11 @@ def cut_text(text: str, limit: int) -> str:
     characters into a bearer token leaves a prefix no pattern recognises, and that prefix
     is then logged.
 
-    So the cut backs off to the last whitespace within `CUT_SEARCH` characters of the
-    limit, which discards a partial token whole. If there is no whitespace that close, the
-    run being cut is at least `CUT_SEARCH` long, which is enough for every pattern to
-    recognise what is kept. The work is bounded by `limit`, whatever the length of `text`.
+    So the cut backs off to the last boundary -- whitespace, or a backslash starting an
+    escape in `repr` output -- within `CUT_SEARCH` characters of the limit, which discards
+    a partial token whole. If there is no boundary that close, the run being cut is at least
+    `CUT_SEARCH` long, which is enough for every pattern to recognise what is kept. The
+    work is bounded by `limit`, whatever the length of `text`.
     """
     if len(text) <= limit:
         return text
@@ -158,9 +160,15 @@ def _end_on_boundary(head: str) -> str:
     them can otherwise leave a fragment of a secret that log redaction cannot recognise.
     A boundary that would leave nothing but whitespace is ignored: the run after it is then
     the whole of what was kept, and long enough to be recognised.
+
+    A backslash counts as a boundary as well as whitespace. Text rendered with `repr`
+    writes whitespace as an escape -- a newline becomes the two characters `\\n` -- so a cut
+    after `repr` would otherwise find no whitespace between `Bearer` and the start of its
+    token, and keep a fragment of it. In ordinary text the only effect is a slightly
+    earlier cut.
     """
     for index in range(len(head) - 1, max(0, len(head) - CUT_SEARCH) - 1, -1):
-        if head[index].isspace():
+        if head[index].isspace() or head[index] == "\\":
             kept = head[:index]
             return head if not kept or kept.isspace() else kept
     return head

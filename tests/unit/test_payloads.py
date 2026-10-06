@@ -341,3 +341,10 @@ def test_a_value_already_marked_by_the_scan_budget_is_not_cut_again() -> None:
     """Cutting a marked result again dropped a whole final word to make room for a marker
     that was already there."""
     assert bounded_text("alpha beta" + " " * 200 + "gamma", 10) == "alpha beta" + ELLIPSIS
+
+
+def test_a_cut_backs_off_to_an_escape_in_repr_output() -> None:
+    """In `repr` output a backslash starts an escape that stands for whitespace."""
+    rendered = "x" * 50 + "Bearer\\nSECRETTOKENVALUE"
+
+    assert cut_text(rendered, 61) == "x" * 50 + "Bearer" + ELLIPSIS

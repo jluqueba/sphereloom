@@ -500,3 +500,17 @@ def test_a_value_whose_key_was_truncated_is_withheld(capsys: pytest.CaptureFixtu
     )
 
     assert "SECRETTOKENVALUE" not in capsys.readouterr().err
+
+
+def test_a_cut_after_repr_leaves_no_fragment_of_a_secret(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`repr` writes whitespace as escapes, so a cut found no whitespace to back off to.
+
+    The padding is sized so the rendered list is cut a few characters into the token.
+    """
+    member = "\n" * 992 + ".Bearer\nSECRETTOKENVALUE"
+    configure_logging(level="INFO", redaction=True)
+    logging.getLogger("sphereloom.test").info("%s", [member])
+
+    assert "SECRE" not in capsys.readouterr().err
