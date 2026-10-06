@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Architecture decision record ADR-0015 for a public documentation site: the README and the
+  public guides will be published with GitHub Pages straight from `main`, with no workflow,
+  no new dependency and nothing from the encrypted internal documents. Diagrams move from
+  inline Mermaid to committed SVG files so they render on the site as they do on GitHub.
 - Fake camera backend (`sphereloom.adapters.fake`) serving the OSC protocol over real HTTP
   on loopback. It runs the whole test suite without hardware and doubles as a demo backend,
   so SphereLoom can be tried with no camera at all. Includes failure injection for a busy
