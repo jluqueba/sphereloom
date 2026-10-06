@@ -118,9 +118,17 @@ jobs:
         uses: DavidAnson/markdownlint-cli2-action@v24
 
   ci-gate:
-    # The single required status check. It depends on every other job and fails if any of
-    # them failed, while still succeeding when a job was legitimately skipped because the
-    # pull request did not touch that area.
+    # The single required status check. It depends on every other job and passes only on an
+    # allow-list of results, never a deny-list. Searching for "failure" or "cancelled" fails
+    # open: it passed on an empty or malformed result set, and on any result outside the
+    # pair it named.
+    #
+    # * Change detection must itself succeed. A skipped heavy job is legitimate only when
+    #   the filter ran and decided the area was untouched.
+    # * Every other job must report "success", or "skipped" because the change did not
+    #   touch that area.
+    # * Anything unreadable fails: jq exits non-zero on malformed input, and an empty
+    #   object fails explicitly because `all` over nothing is true.
     name: ci-gate
     needs: [changes, check, docs]
     if: always()
@@ -132,9 +140,14 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS"
-          if echo "$RESULTS" | grep -qE '"result": "(failure|cancelled)"'; then
+          if ! echo "$RESULTS" | jq -e '
+            type == "object"
+            and length > 0
+            and .changes.result == "success"
+            and all(.[]; .result == "success" or .result == "skipped")
+          ' > /dev/null; then
             echo "::error::One or more CI jobs did not succeed."
             exit 1
           fi
-          echo "All required jobs succeeded or were skipped."
+          echo "All required jobs succeeded or were legitimately skipped."
 
