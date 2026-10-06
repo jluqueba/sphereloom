@@ -1118,6 +1118,26 @@ async def test_a_redirect_is_not_served_as_file_content() -> None:
     assert caught.value.retryable is False
 
 
+@pytest.mark.parametrize("status", [201, 202, 203, 204, 206])
+async def test_only_a_complete_answer_is_served_as_file_content(status: int) -> None:
+    """A success status is not a file. A 204 or 202 has none, and a 206 is a fragment.
+
+    No `Range` is ever sent, so a partial answer is unsolicited; accepting any of these
+    would publish an empty or truncated download as complete.
+    """
+    transport = httpx.MockTransport(lambda request: httpx.Response(status, content=b"part"))
+    http = OscHttpClient("http://192.168.42.1", transport=transport)
+    try:
+        with pytest.raises(InternalError) as caught:
+            async with http.stream("/DCIM/Camera01/IMG_0001.jpg"):
+                pass  # pragma: no cover - the context manager raises on entry
+    finally:
+        await http.aclose()
+
+    assert caught.value.details["status_code"] == status
+    assert caught.value.retryable is False
+
+
 async def test_a_rate_limited_download_reads_like_a_rate_limited_command() -> None:
     """A 429 is the camera saying "slow down", wherever it says it.
 

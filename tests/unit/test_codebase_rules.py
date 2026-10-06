@@ -131,8 +131,23 @@ def test_no_unbounded_repr_reaches_a_message() -> None:
 # ---------------------------------------------------------------- lenient JSON decoding
 
 
+#: What may be taken from the `json` package. Everything else in it decodes -- `loads`,
+#: `load`, `JSONDecoder` and its `decode` and `raw_decode`, the `decoder` and `scanner`
+#: modules -- and Python's decoder accepts `NaN`, `Infinity` and `1e400`.
+_JSON_ENCODING_ONLY = frozenset({"dumps", "dump", "JSONEncoder", "JSONDecodeError"})
+
+#: Methods that decode JSON whatever object they are called on. `.json()` on a response or
+#: a request caused both defects this rule was written for; `raw_decode` is the decoder's
+#: second entry point and is reachable from an instance however its class was imported.
+#: pydantic's parsers accept the same non-finite values by default, and pydantic is the
+#: model library here, so `Model.model_validate_json(body)` is the natural line to write.
+_DECODING_METHODS = frozenset(
+    {"json", "raw_decode", "model_validate_json", "validate_json", "from_json"}
+)
+
+
 def _json_aliases(tree: ast.Module) -> set[str]:
-    """Local names bound to the `json` module. `import json as _j` must not evade the rule."""
+    """Local names bound to the `json` package. `import json as _j` must not evade the rule."""
     aliases: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -140,60 +155,91 @@ def _json_aliases(tree: ast.Module) -> set[str]:
     return aliases
 
 
-def _direct_json_imports(tree: ast.Module) -> set[str]:
-    """Names bound by `from json import loads`, which bypasses attribute matching."""
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "json":
-            names.update(
-                alias.asname or alias.name
-                for alias in node.names
-                if alias.name in {"loads", "load"}
-            )
-    return names
-
-
-def _callee_name(call: ast.Call) -> str:
-    """The bare name being called, whether `f()` or `mod.f()`."""
-    if isinstance(call.func, ast.Name):
-        return call.func.id
-    if isinstance(call.func, ast.Attribute):
-        return call.func.attr
-    return ""
-
-
 def _lenient_decode_offenders(tree: ast.Module) -> list[int]:
-    """Every shape that decodes JSON without the non-finite guards.
+    """Every reference to a JSON decoding entry point, not only every call shape.
 
-    `.json()` is included because both defects this rule was written for were `.json()`
-    calls on a response or a request, not `json.loads`: a rule that misses the shape that
-    caused the defect is decoration.
+    Matching calls let each new shape through: `JSONDecoder().decode` was caught, then
+    `JSONDecoder.raw_decode` and an aliased decoder were not. A decoder has to be reached
+    by importing it or by reading it off the package, so those references are the offence;
+    an alias then changes nothing, because the import that created it is already flagged.
     """
     aliases = _json_aliases(tree)
-    direct = _direct_json_imports(tree)
     lines: list[int] = []
 
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if isinstance(func, ast.Attribute):
-            is_module_call = isinstance(func.value, ast.Name) and func.value.id in aliases
-            is_module_decode = func.attr in {"loads", "load"} and is_module_call
-            # `.json()` on a response or a request is the shape that caused both defects
-            # this rule was written for, so missing it would make the rule decoration.
-            if is_module_decode or func.attr == "json":
+        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "json":
+            submodule = node.module != "json"
+            if submodule or any(alias.name not in _JSON_ENCODING_ONLY for alias in node.names):
                 lines.append(node.lineno)
-            elif func.attr == "decode":
-                # Only `JSONDecoder().decode(...)`, which is what `json.loads` calls.
-                # `bytes.decode("utf-8")` is text decoding and unrelated.
-                receiver = func.value
-                if isinstance(receiver, ast.Call) and _callee_name(receiver) == "JSONDecoder":
-                    lines.append(node.lineno)
-        elif isinstance(func, ast.Name) and func.id in direct:
+        elif isinstance(node, ast.ImportFrom):
+            # A decoding function imported by name, such as `from pydantic_core import
+            # from_json`, is then called bare, where no attribute is left to match.
+            if any(alias.name in _DECODING_METHODS for alias in node.names):
+                lines.append(node.lineno)
+        elif isinstance(node, ast.Import):
+            if any(alias.name.startswith("json.") for alias in node.names):
+                lines.append(node.lineno)
+        elif isinstance(node, ast.Attribute):
+            on_package = isinstance(node.value, ast.Name) and node.value.id in aliases
+            if (on_package and node.attr not in _JSON_ENCODING_ONLY) or (
+                node.attr in _DECODING_METHODS
+            ):
+                lines.append(node.lineno)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and node.args
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id in aliases
+        ):
             lines.append(node.lineno)
 
     return lines
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import json\njson.loads(b)",
+        "import json\njson.load(f)",
+        "import json as j\nj.loads(b)",
+        "from json import loads\nloads(b)",
+        "from json import loads as parse\nparse(b)",
+        "import json\njson.JSONDecoder().decode(b)",
+        "import json\njson.JSONDecoder().raw_decode(b)",
+        "from json import JSONDecoder\nJSONDecoder().raw_decode(b)",
+        "from json import JSONDecoder as Decoder\nDecoder().decode(b)",
+        "from json.decoder import JSONDecoder\nJSONDecoder().decode(b)",
+        "import json.decoder\njson.decoder.JSONDecoder().decode(b)",
+        "import json\nparse = json.loads",
+        "import json\ngetattr(json, 'loads')(b)",
+        "decoder.raw_decode(b)",
+        "response.json()",
+        "from pydantic import BaseModel\nModel.model_validate_json(b)",
+        "from pydantic import TypeAdapter\nTypeAdapter(int).validate_json(b)",
+        "from pydantic_core import from_json\nfrom_json(b)",
+        "import pydantic_core\npydantic_core.from_json(b)",
+    ],
+)
+def test_the_json_rule_catches_every_way_to_reach_a_decoder(source: str) -> None:
+    """A gate that misses a shape stays green while the defect it guards against ships."""
+    assert _lenient_decode_offenders(ast.parse(source))
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import json\njson.dumps(v)",
+        "from json import dumps, JSONDecodeError",
+        "import json\nexcept_type = json.JSONDecodeError",
+        "data.decode('utf-8')",
+        "from sphereloom.domain.payloads import strict_json_loads\nstrict_json_loads(b)",
+    ],
+)
+def test_the_json_rule_leaves_encoding_and_text_decoding_alone(source: str) -> None:
+    """A rule that flags everything gets exempted everywhere, which is the same as none."""
+    assert not _lenient_decode_offenders(ast.parse(source))
 
 
 def test_json_is_never_decoded_leniently() -> None:

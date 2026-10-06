@@ -55,7 +55,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Streaming downloads map every transport failure to the SphereLoom taxonomy, including
   failures raised while the caller reads the body. A dropped transfer is the normal case on
   a weak access point, and a consumer should not have to catch third-party exception types
-  to handle it.
+  to handle it. Only an HTTP 200 is served as file content: a redirect, an empty success
+  such as 204, or an unsolicited partial answer (206) is refused rather than published as
+  a complete file.
 - Vendor error mapping (`sphereloom.adapters.osc.errors`) translating Insta360 error codes
   into the SphereLoom taxonomy, preserving the original payload for diagnosis and keeping
   actionable vendor wording. Unrecognised codes become `internal` rather than a guess.

@@ -65,6 +65,10 @@ XSRF_VALUE = "1"
 #: The vendor's guidance is at most one `/osc/info` request per second.
 INFO_MIN_INTERVAL_SECONDS = 1.0
 
+#: The only status that carries a complete file. Downloads send no `Range`, so any other
+#: success status is either empty or a fragment.
+HTTP_OK = 200
+
 #: Commands that are safe to repeat. Anything absent is treated as unsafe, so a command
 #: added later cannot silently inherit retries by omission.
 #:
@@ -339,14 +343,17 @@ class OscHttpClient:
                     details={"status_code": response.status_code},
                     retryable=True,
                 )
-            if not response.is_success:
-                # Any other status outside 2xx, redirects included, is neither file content
-                # nor a usable vendor answer. Redirects are deliberately not followed, so
-                # persisting a 3xx body would write a redirect page to disk under a media
-                # filename. Not retryable: a redirect comes back the same way every time.
+            if response.status_code != HTTP_OK:
+                # Only a 200 carries the complete file. Redirects are deliberately not
+                # followed, so persisting a 3xx body would write a redirect page to disk
+                # under a media filename. Other 2xx statuses are no better: a 204 or 202
+                # carries no file at all, and a 206 is part of one -- this request sends no
+                # `Range`, so a partial answer is unsolicited -- and either would be
+                # published as a complete download, empty or truncated. Not retryable: the
+                # camera answers the same way every time.
                 raise InternalError(
                     f"The camera answered the download with HTTP {response.status_code} "
-                    "instead of file content.",
+                    "instead of the complete file.",
                     backend=BACKEND,
                     details={"status_code": response.status_code},
                 )

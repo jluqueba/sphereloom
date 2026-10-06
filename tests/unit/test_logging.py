@@ -239,6 +239,13 @@ def test_a_sensitive_word_anywhere_in_a_label_redacts_its_value(raw: str) -> Non
         f"saved {PureWindowsPath(r'\\nas\share\john smith\x.insv')!r}",
         f"files {[PureWindowsPath(r'\\nas\share\john smith\x.insv')]}",
         "open file://nas/share/john/x.insv",
+        # A first component with a space, and a path that only looks like the protocol.
+        "open /Company Data/john/private.txt",
+        "open '/Company Data/john/private.txt' now",
+        "open /osc/john/private.txt",
+        "open /osc/info/john/private.txt",
+        "open /osc/info.bak/john/private.txt",
+        "open /osc/state-old/john/private.txt",
     ],
 )
 def test_any_absolute_path_is_redacted(raw: str) -> None:
@@ -251,6 +258,10 @@ def test_any_absolute_path_is_redacted(raw: str) -> None:
     [
         "POST http://192.168.42.1/osc/commands/execute",
         "POST /osc/commands/execute",
+        "POST /osc/commands/status",
+        "GET /osc/info then /osc/state",
+        "POST /osc/checkForUpdates",
+        "either / or / both",
         "GET http://192.168.42.1:80/DCIM/Camera01/VID_001.insv",
         "GET https://example.com//double/slash",
         "saved to downloads/clip.insv",

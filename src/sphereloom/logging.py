@@ -61,11 +61,16 @@ _SENSITIVE_KEY = re.compile(rf"(?i)(?:{_SENSITIVE_WORDS})")
 #: Where an absolute path begins: a drive letter followed by one slash of either kind (two
 #: forward slashes are a URL scheme), a network share under any server name -- including
 #: the `\\?\UNC\` and `\\.\UNC\` prefixes, WebDAV's `server@SSL@443`, the forward slashes
-#: of a `WindowsPath` repr and a `file://` URI -- or a POSIX directory. The camera's own
-#: `/osc/` endpoints are protocol, not a place on anyone's disk.
+#: of a `WindowsPath` repr and a `file://` URI -- or a POSIX directory, whose name may hold
+#: spaces as in `/Company Data/` but does not start with one, so `a / b` in prose is left
+#: alone. Only the camera's documented `/osc/` endpoints are exempt: they are protocol, not
+#: a place on anyone's disk, while anything else under `/osc/` could be.
 _DRIVE = r"[a-z]:(?:\\|/(?!/))"
 _SHARE = r"(?:\\{2,4}|(?:(?<![\w:/])|(?<=file:))//)[^\\/\s\"',]+[\\/]"
-_POSIX_DIR = r"/(?!osc/)[\w.$~-]+/"
+_POSIX_DIR = (
+    r"/(?!osc/(?:info|state|checkForUpdates|commands/(?:execute|status))(?=[\s?\"',)\]}]|$))"
+    r"[^\s/\"',][^/\r\n\"',]{0,254}+/"
+)
 _PATH_START = rf"(?:{_DRIVE}|{_SHARE}|{_POSIX_DIR})"
 
 #: Before a POSIX path: anything but a character that would make it the tail of a URL or
