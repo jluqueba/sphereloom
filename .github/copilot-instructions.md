@@ -162,6 +162,11 @@
 - Every error taxonomy code must have at least one test.
 - Include tests for capability checks and unsupported responses.
 - Include tests for path jail enforcement and redaction behavior when implementing those features.
+- Inject time, sleeping and failures through seams the production code already defines; never synchronise a test on wall-clock time.
+- Never assert a platform's own behaviour. CI runs Ubuntu and Windows, and a filename a tab makes illegal on one is legal on the other. Inject the failure instead of provoking it, so the test asserts the guarantee rather than the quirk; gate with `skipif` only when injection is impossible.
+- Run the suite on Linux as well as Windows before pushing; CI runs both.
+- Do not prove that work is bounded with a stopwatch. On a shared CI runner no threshold reliably separates the fixed cost from the regressed one, so the test either flakes or passes the regression. Observe the work instead, by counting what was read or done through an injected seam.
+- For every test written to catch a regression, reintroduce the defect and confirm the test fails (a mutation check) before pushing.
 
 ## Documentation
 
@@ -185,14 +190,58 @@
 - Workflows should set `timeout-minutes`.
 - Keep Dependabot updates grouped and conventional-commit friendly.
 
+## Pull request scope
+
+- Keep each pull request to one topic and at most about 400 lines of production code, plus its tests. Split before opening, not during review.
+- A pull request must not change logging, the transport layer and the filesystem layer at the same time.
+- Before writing code, list the invariants the change must hold and the test that proves each one: bounds on memory, time and size against untrusted input; the mapping from each status or error to a taxonomy code and whether it is retryable; what happens after an ambiguous outcome (an accepted capture is never retryable); and what is written to disk and how it is cleaned up.
+- A design decision that emerges during review lands in its own small documentation pull request (an ADR, a spec or plan amendment), not inside the feature pull request. Closing the feature pull request must never lose the decision.
+
+## Pull request metadata
+
+Every pull request carries a milestone and at least one area label, set when it is opened rather than at merge time. The milestone is what makes a release reconstructible: the GitHub Release notes, the CHANGELOG section and the announcement are all assembled from the pull requests in that milestone.
+
+- **Milestone**: the milestone the work delivers, named exactly as in the roadmap table in `docs/internal/envisioning/vision.md`. Each milestone description names its target version.
+- **Labels**: one or more `area: *` labels, plus a type label (`enhancement`, `bug`, `documentation`). Add `release` to a pull request that cuts a version.
+- A pull request that spans two milestones is too large; split it.
+
+Milestones double as release groupings. M2 is the first released version (0.1.0) and is the MVP: it is the point at which a tag, a GitHub Release, a CHANGELOG entry and a LinkedIn post are produced together, following `docs/internal/process/release-communication.md`.
+
 ## Pull request completion
 
 - Copilot code review runs on every push to an open pull request (`review_on_push`).
-- A pull request is ready to merge only when the **most recent** review cycle produced **no new findings**.
-- Resolving one review's findings and merging on green CI is not sufficient: the fixing push starts a new review, which may surface new problems, including ones the fix introduced.
-- After pushing fixes, wait for the new review, read it, and repeat until a cycle comes back clean.
-- Compare review and comment timestamps against the last push using `gh api repos/<owner>/<repo>/pulls/<n>/reviews` and `.../comments`. The history is what proves a cycle completed after the change.
-- Resolve review threads only after the findings are actually addressed, never to unblock a merge.
+- Read every review in full, then **triage each finding** before acting on it. Only correctness and security findings block a merge; see "Triage findings before acting" below.
+- A pull request is ready to merge when CI is green, the most recent **Copilot** review examined the current head commit, and that review, including its "Previously missed" section, contains **no unresolved correctness or security finding**.
+- A fixing push starts a new review, which may surface new problems, including ones the fix introduced. Wait for it and triage it the same way before merging.
+- Do not widen the scope of a pull request while it is under review.
+- Allow at most three review cycles per pull request. If blocking findings remain after the third, stop, explain why the change is not converging, and propose splitting or narrowing it instead of iterating further.
+
+### Triage findings before acting
+
+Fix a finding before merging only if it is one of these:
+
+- **Correctness**: wrong behaviour on some input, a wrong or misleading error code, a test that cannot fail or exercises a different branch than it claims, a CI or merge gate that can pass when it should not.
+- **Security**: a leak of secrets or personal data, an escape from the path jail, unbounded work or memory on untrusted input, an off-origin request, a missing authentication or confirmation check.
+
+Everything else is **minor** and does not block: wording, docstring and comment typos, style, naming, consistency nits, and hardening against a condition no realistic input can trigger. Reply on the thread that it was judged minor under this rule, resolve it, and do not push a commit for it. A minor finding may be folded into a later change that touches the same code.
+
+Verify before fixing. Reproduce a claimed defect first; a finding that does not reproduce is answered on its thread with the evidence and resolved, not fixed on faith. When a defect is real, find every occurrence of its class before fixing, and add an automated rule where one is possible.
+
+This rule relaxes what blocks a merge, not what is done before pushing. The local safeguards stay mandatory for every change: the codebase rule tests, the suite on both Windows and Linux, an adversarial review of the diff, and mutation checks for any new test written to catch a regression.
+
+### Read the review body, not only the inline comments
+
+Findings are reported in two different places, and reading only one of them hides the rest. This has happened: six medium findings survived several cycles because only inline comments were being checked.
+
+- **Inline threads** carry the findings attached to changed lines: `gh api --paginate repos/<owner>/<repo>/pulls/<n>/comments`, filtered to the login `Copilot`.
+- **The review body** carries the overview and two sections that appear nowhere else: the **severity counts** (`Findings: 1 High`), and **"Previously missed (n)"**, which lists findings in code that has not changed since the last review. Read the newest review *by Copilot*, together with the commit it examined: `gh pr view <n> --json reviews,headRefOid --jq '([.reviews[] | select(.author.login == "copilot-pull-request-reviewer")] | last) as $r | {head: .headRefOid, reviewed: $r.commit.oid, body: $r.body}'`. `gh pr view` fetches every review, whereas the REST endpoints return only the first 30 items unless paginated.
+- Never take "the last review" or "the last comment" without filtering by author and reading every page. The reviews endpoint also returns maintainer replies, and on a long pull request the first page ends well before the newest review: on #5 it stopped at review 30 of 62, at a maintainer reply nine hours older than the latest Copilot review.
+- Never filter findings by `created_at > last push`. That filter cannot by construction show an older finding that is still outstanding, which is exactly what "previously missed" means.
+- The reviewer appears under three logins: `copilot-pull-request-reviewer[bot]` in `/pulls/N/reviews`, `Copilot` in `/pulls/N/comments`, and `copilot-pull-request-reviewer` in GraphQL. Match the set exactly; a filter written for one returns nothing against another.
+- Thread resolution state is only available through GraphQL (`reviewThreads { isResolved }`), not REST.
+- Treat an unreadable answer as not clean: a check that cannot read its input must never report success.
+- Compare review and comment timestamps against the last push to prove a cycle ran after the change, but use timestamps to establish *which cycle is current*, never to decide which findings still need work.
+- Resolve review threads only after the findings are actually addressed, never to unblock a merge. Under the triage rule, a minor finding is addressed by a reply explaining that it was judged minor.
 - Automated review cannot read `docs/internal/**` because it is encrypted; those changes need a maintainer with the key.
 
 ## Authoritative artifacts

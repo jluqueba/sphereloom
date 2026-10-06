@@ -68,6 +68,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Pull requests merge when CI is green and the latest automated review, read in full
+  including its "Previously missed" section, holds no unresolved correctness or security
+  finding. Other findings are triaged as minor and answered without a commit, and a pull
+  request stops after three review cycles to be split or narrowed. Documented in
+  `CONTRIBUTING.md` together with the size limit per pull request, milestone and label
+  conventions, the requirement to run the suite on Linux as well as Windows, and an
+  extended pull-request template that records invariants and validation results.
 - Documentation now states plainly that SphereLoom targets **Insta360** cameras rather than
   360° cameras generally. The Wi-Fi layer follows the open OSC standard, so other OSC
   cameras may happen to work, but none is tested or supported.
@@ -77,6 +84,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The `ci-gate` status check searched the job results for `failure` or `cancelled` and
+  passed otherwise, so it failed open: an empty or malformed result set, a result outside
+  that pair, or a run in which change detection never ran all reported success. The gate
+  now passes only when change detection succeeded and every job reported `success` or
+  `skipped`.
 - The fake camera accepted option values whose JSON type was wrong. Because `False == 0`
   and `1 == True` in Python, `exposureDelay: false` matched the accepted value `0` and was
   stored unchanged, so `getOptions` returned a boolean where a number belongs and a
