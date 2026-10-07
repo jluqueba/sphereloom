@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Architecture decision record ADR-0016: public documentation and tool output describe what
+  SphereLoom can do now, in three states (available, not yet available, not supported by
+  the vendor API), with no milestones or roadmap. New capabilities are announced in this
+  changelog and in GitHub Releases. The capability contract reports a three-state `status`
+  instead of a milestone.
 - Architecture decision record ADR-0015 for a public documentation site: the README and the
   public guides will be published with GitHub Pages straight from `main`, with no workflow,
   no new dependency and nothing from the encrypted internal documents. Diagrams move from

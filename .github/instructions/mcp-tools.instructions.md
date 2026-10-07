@@ -20,7 +20,8 @@ applyTo: "src/sphereloom/tools/**/*.py"
 - Keep cursors opaque to clients.
 - Use the public structured error envelope for tool failures.
 - Include `code`, `message`, and relevant context fields in errors.
-- Unsupported capabilities must return `{code: "unsupported", backend, reason, docs_url}`.
+- Unsupported capabilities must return `{code: "unsupported", backend, capability, status, reason, docs_url}`, where `status` is `not_yet_available` or `unsupported_by_vendor`.
+- Tool descriptions, results and errors describe the current state only and never name a milestone (ADR-0016).
 - Check the capability registry before dispatching to an adapter.
 - Do not let adapter-specific exceptions leak through the MCP boundary.
 - Destructive tools such as delete and format require a confirmation token.
