@@ -20,9 +20,10 @@ body:
     validations:
       required: true
   - type: dropdown
-    id: milestone-backend
+    id: area
     attributes:
-      label: Target milestone or backend
+      label: Area
+      description: Which part of SphereLoom does this concern?
       options:
         - OSC Wi-Fi
         - USB Camera SDK

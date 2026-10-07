@@ -171,7 +171,7 @@
 ## Documentation
 
 - Documentation must be honest about available capabilities.
-- Public documentation and tool output describe the current state only, in three states: available now, not yet available, and not supported by the vendor API. Never mention milestones, dates or a roadmap there (ADR-0016); milestones are internal planning, and new capabilities are announced in the CHANGELOG and GitHub Releases.
+- Public documentation and tool output describe the current state only, in three states: available, not yet available, and not supported by the vendor API. Never mention milestones, dates or a roadmap there (ADR-0016); milestones are internal planning, and new capabilities are announced in the CHANGELOG and GitHub Releases.
 - Do not promise live preview, streaming, OSC exposure control, or OSC video stitching.
 - Use relative links inside the repository.
 - Keep markdown markdownlint-clean.
@@ -197,15 +197,21 @@
 - Before writing code, list the invariants the change must hold and the test that proves each one: bounds on memory, time and size against untrusted input; the mapping from each status or error to a taxonomy code and whether it is retryable; what happens after an ambiguous outcome (an accepted capture is never retryable); and what is written to disk and how it is cleaned up.
 - A design decision that emerges during review lands in its own small documentation pull request (an ADR, a spec or plan amendment), not inside the feature pull request. Closing the feature pull request must never lose the decision.
 
-## Pull request metadata
+## Work tracking: issues, milestones and the project board
 
-Every pull request carries a milestone and at least one area label, set when it is opened rather than at merge time. The milestone is what makes a release reconstructible: the GitHub Release notes, the CHANGELOG section and the announcement are all assembled from the pull requests in that milestone.
+Issues are the unit of work. Milestones group issues into phases and releases. A private GitHub Project (`jluqueba` project 1, "SphereLoom") holds status and priority. Each piece of information lives in exactly one place, so the milestone page and the board always agree.
 
-- **Milestone**: the milestone the work delivers, named exactly as in the roadmap table in `docs/internal/envisioning/vision.md`. Each milestone description names its target version.
-- **Labels**: one or more `area: *` labels, plus a type label (`enhancement`, `bug`, `documentation`). Add `release` to a pull request that cuts a version.
-- A pull request that spans two milestones is too large; split it.
+- **One issue per pull request.** Every planned pull request has an issue, and every pull request closes exactly one issue with a closing keyword (`Closes #N`) in its description. Work that has no issue gets one before it starts, including work discovered during another task.
+- **The milestone goes on the issue, never on the pull request.** GitHub counts issues and pull requests in a milestone, so a milestone on both would count every task twice. The pull request is linked to the issue instead.
+- **Labels**: issues carry one or more `area: *` labels, a type label (`enhancement`, `bug`, `documentation`) and a size label (`size: S`, `size: M`, `size: L`). Pull requests carry the same area and type labels. Add `release` to the issue and the pull request that cut a version.
+- **Board status**: `Todo` → `In Progress` when work starts (assign the issue at the same time) → `In review` when the pull request opens → `Done` when the pull request merges and closes the issue. Set each transition explicitly and verify it after merging, even where a project workflow is expected to do it.
+- **Priority**: the `Priority` field (`P1`, `P2`, `P3`) is set only to override the planned order. An empty priority means "in plan order", which is the issue number order within a milestone. Pick the next task as the highest-priority `Todo` issue whose dependencies are closed, in the milestone in progress.
+- **Progress report**: after every merge, report the milestone's open and closed counts.
+- **Rolling-wave detail**: before work on a milestone starts, detail it into pull-request-sized issues, each with acceptance criteria taken from its specification, a size and its dependencies, and add them to the board. A milestone whose specification does not exist yet keeps a few high-level issues, the first of which is to write that specification.
+- **Issues are public.** Write them in English, describe behaviour rather than file paths, and summarise design context instead of copying encrypted internal documents (ADR-0014). Describe what a capability does, not when it will ship.
+- A task that spans two milestones is too large; split it.
 
-Milestones double as release groupings. M2 is the first released version (0.1.0) and is the MVP: it is the point at which a tag, a GitHub Release, a CHANGELOG entry and a LinkedIn post are produced together, following `docs/internal/process/release-communication.md`.
+Milestones double as release groupings. M2 is the first released version (0.1.0) and is the MVP: it is the point at which a tag, a GitHub Release, a CHANGELOG entry and a LinkedIn post are produced together, following `docs/internal/process/release-communication.md`. Release notes are assembled from the issues closed in the milestone, each linked to the pull request that delivered it.
 
 ## Pull request completion
 
