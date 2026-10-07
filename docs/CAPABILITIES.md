@@ -28,7 +28,7 @@ Wi-Fi is not available yet; the table shows the state of each capability on this
 | Delete media from the camera | `files.delete` | Not yet available | Disabled by default; needs a confirmation token |
 | Exposure and white balance control | `exposure.control` | Not supported by the vendor API | The camera's Wi-Fi API does not expose exposure parameters |
 | Live preview or streaming | `preview.live` | Not supported by the vendor API | The camera's Wi-Fi API does not provide a live stream |
-| Format the storage card | `storage.format` | Not yet available | |
+| Format the storage card | `storage.format` | Not supported by the vendor API | The camera's Wi-Fi API has no format command |
 | Stitch video into a 360° video | `media.stitch.video` | Not yet available | Needs the Insta360 Media SDK, which you obtain yourself, and an NVIDIA GPU |
 | Export processed media | `media.export` | Not yet available | Needs the Insta360 Media SDK, which you obtain yourself, and an NVIDIA GPU |
 
