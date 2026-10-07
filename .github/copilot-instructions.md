@@ -57,7 +57,7 @@
 - Use a capability registry to describe backend and camera-model support.
 - Check capabilities before dispatching to an adapter.
 - Unsupported operations must return a structured error instead of failing opaquely.
-- The unsupported error shape is `{code: "unsupported", backend, reason, docs_url}`.
+- The unsupported error shape is `{code: "unsupported", backend, capability, status, reason, docs_url}`, where `status` is `not_yet_available` or `unsupported_by_vendor`. It never names a milestone (ADR-0016).
 - Do not claim a capability unless the active backend can actually provide it.
 - Do not fake a capability to make a demo look complete.
 - Keep backend selection explicit and observable in diagnostics.
@@ -171,7 +171,7 @@
 ## Documentation
 
 - Documentation must be honest about available capabilities.
-- Distinguish available now, planned milestone, and not supported by the vendor API.
+- Public documentation and tool output describe the current state only, in three states: available now, not yet available, and not supported by the vendor API. Never mention milestones, dates or a roadmap there (ADR-0016); milestones are internal planning, and new capabilities are announced in the CHANGELOG and GitHub Releases.
 - Do not promise live preview, streaming, OSC exposure control, or OSC video stitching.
 - Use relative links inside the repository.
 - Keep markdown markdownlint-clean.

@@ -12,13 +12,17 @@ applyTo: "**/*.md"
 - Use repository-relative links for internal references.
 - Do not use bare URLs when a descriptive link is clearer.
 - Be honest about capability status.
-- Capability matrices must distinguish `available now`, `planned milestone`, and `not supported by the vendor API`.
+- Public documentation (`README.md`, `docs/DEVELOPER_GUIDE.md`, `docs/CAPABILITIES.md`, the published site) describes the current state only. Never mention milestones, target dates or a roadmap there; milestones are internal planning (ADR-0016).
+- Capability matrices use exactly three states: `available`, `not yet available`, and `not supported by the vendor API`.
+- Keep `README.md` a general summary: what SphereLoom is, what it does, how it works in plain terms, documentation links, a short status, and licensing. Put no diagrams and no capability matrix in it; architecture and diagrams belong in `docs/DEVELOPER_GUIDE.md`, the matrix in `docs/CAPABILITIES.md`.
+- Embed diagrams as committed SVG images rendered from a Mermaid source in `docs/assets/`, never as inline Mermaid blocks, and give each one alt text.
 - Do not claim live preview, streaming, OSC exposure control, or OSC video stitching support.
 - Do not claim trimming, cutting, merging, or timeline editing support; the vendor does not document it.
-- Describe `sphereloom-assistant` as an optional, deferred layer after Milestone 2, never as part of the base server.
+- Describe `sphereloom-assistant`, if at all, as an optional layer that is not part of the base server.
 - State that the base server requires no model credentials and depends on no agent framework.
-- State that Milestone 1 is OSC Wi-Fi only when describing initial functionality.
-- State that media and stitching support is planned for a later milestone until implemented.
+- State that camera control currently works over Wi-Fi (OSC) only when describing current functionality.
+- State that media processing and video stitching are not available yet until they are implemented.
+- Announce new capabilities in `CHANGELOG.md` and in GitHub Releases when they ship.
 - When Insta360 is mentioned prominently, include this disclaimer: `Insta360 is a trademark of Arashi Vision Inc. SphereLoom is an independent, unaffiliated project and is neither endorsed by nor associated with Arashi Vision Inc.`
 - Keep trademark usage descriptive and compatibility-focused.
 - Do not imply endorsement, partnership, certification, or sponsorship.
