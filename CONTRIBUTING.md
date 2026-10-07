@@ -86,7 +86,7 @@ Before opening a PR, make sure:
 - No GPL-licensed dependency was added.
 - No Insta360 SDK binaries were committed.
 - The PR title follows Conventional Commits.
-- A **milestone** is set, and at least one `area:` label plus a type label.
+- The PR closes exactly one issue with `Closes #N` in its description, and carries that issue's `area:` and type labels.
 - The suite passes on **both** operating systems in the CI matrix.
 
 The repository uses a single required status check named `ci-gate`. The CI design uses change detection so documentation-only PRs can skip heavy jobs while the required gate still reports success. The gate is an allow-list: it passes only when every job it depends on reported `success`, or `skipped` because the change did not touch that area. Any other result, including one GitHub adds in the future, fails it. PRs are squash-merged using the PR title.
@@ -114,14 +114,16 @@ When a behaviour genuinely differs between platforms, do not encode one platform
 
 For every test written to catch a regression, reintroduce the defect locally and confirm the test fails before pushing. A test that cannot fail protects nothing.
 
-### Milestones and labels
+### Issues, milestones and labels
 
-The milestone is what makes a release reconstructible. Release notes, the `CHANGELOG.md` section and the announcement are all assembled from the pull requests in a milestone, so a PR without one disappears from the record.
+Work is tracked in issues. Each planned pull request has an issue describing the behaviour to deliver and its acceptance criteria, and each pull request closes exactly one issue with `Closes #N`. If you want to work on something without an issue, open one first and say so in a comment, so nobody duplicates the work.
 
-- Use the milestone titles from the roadmap; each one names the version it targets.
-- Add one or more `area:` labels so the changelog can be grouped by subsystem, plus a type label (`enhancement`, `bug`, `documentation`).
-- Add `release` to the PR that cuts a version.
-- If a PR fits two milestones, it is doing two things and should be split.
+The **milestone goes on the issue, not on the pull request**. GitHub counts both issues and pull requests in a milestone, so setting it on both would count every task twice; the pull request is linked to its issue instead. A milestone's page therefore shows exactly how many tasks are done and how many remain, and release notes are assembled from the issues closed in it.
+
+- Issues carry one or more `area:` labels so the changelog can be grouped by subsystem, a type label (`enhancement`, `bug`, `documentation`) and a size label (`size: S`, `size: M`, `size: L`). Pull requests carry the same area and type labels.
+- Add `release` to the issue and the pull request that cut a version.
+- If a task fits two milestones, it is doing two things and should be split.
+- Issues are public: describe the behaviour, not file paths, and do not paste content from the encrypted internal documents.
 
 Milestone **M2 is the first released version (0.1.0) and the MVP**: reaching it produces a tag, a GitHub Release, a `CHANGELOG.md` entry and a public announcement together, rather than separately.
 

@@ -1,4 +1,4 @@
-# SphereLoom
+# 🔮 SphereLoom
 
 **An MCP server that lets AI agents control Insta360 cameras and process their 360° media
 locally.**

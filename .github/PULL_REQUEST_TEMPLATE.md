@@ -33,7 +33,7 @@ Link any specs, plans, tasks, or ADRs touched by this PR:
 - [ ] Pytest passes on Windows and on Linux (for example WSL Ubuntu).
 - [ ] Every new regression test was mutation-checked: it fails when the defect is reintroduced.
 - [ ] One topic, at most about 400 lines of production code (tests excluded).
-- [ ] Milestone set, plus at least one `area:` label and a type label.
+- [ ] Closes exactly one issue (`Closes #N` above); the milestone is on that issue, not on this PR. Area and type labels set.
 - [ ] Documentation is updated where needed.
 - [ ] CHANGELOG entry added for user-visible changes.
 - [ ] No GPL-licensed dependencies were added.

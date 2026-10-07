@@ -77,6 +77,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Work is tracked in issues: every pull request closes one issue, and the milestone is set
+  on the issue only, so a milestone's open and closed counts show tasks rather than
+  counting each task twice. Documented in `CONTRIBUTING.md` and the pull-request template.
+  The feature request form asks for the area concerned instead of a target milestone.
 - Pull requests merge when CI is green and the latest automated review, read in full
   including its "Previously missed" section, holds no unresolved correctness or security
   finding. Other findings are triaged as minor and answered without a commit, and a pull
