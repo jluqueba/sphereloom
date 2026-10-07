@@ -53,8 +53,17 @@ CAPABILITY_IDS = frozenset(
 )
 
 _PLANNING = re.compile(r"(?i)\bmilestones?\b|\bM[0-9](?:\.[0-9])?\b|\broadmap\b")
-_INLINE_MERMAID = re.compile(r"^\s*```\s*mermaid\b", re.MULTILINE)
-_IMAGE = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<target>[^)\s]+)\)")
+#: A fenced Mermaid block, opened with backticks or tildes (CommonMark allows both).
+_INLINE_MERMAID = re.compile(r"^\s{0,3}(?:`{3,}|~{3,})\s*mermaid\b", re.MULTILINE | re.IGNORECASE)
+_INLINE_IMAGE = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<target>[^)\s]+)(?:\s+\"[^\"]*\")?\)")
+_REFERENCE_IMAGE = re.compile(r"!\[(?P<alt>[^\]]*)\]\[(?P<label>[^\]]*)\]")
+_REFERENCE_DEFINITION = re.compile(
+    r"^\s{0,3}\[(?P<label>[^\]]+)\]:\s*(?P<target>\S+)", re.MULTILINE
+)
+_HTML_IMAGE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+_HTML_ATTRIBUTE = re.compile(
+    r"\b(?P<name>alt|src)\s*=\s*(?:\"(?P<dq>[^\"]*)\"|'(?P<sq>[^']*)')", re.IGNORECASE
+)
 _MATRIX_ROW = re.compile(r"^\|[^|]*\|\s*`(?P<id>[^`]+)`\s*\|\s*(?P<status>[^|]*?)\s*\|")
 
 
@@ -80,15 +89,52 @@ def planning_mentions(markdown: str) -> list[str]:
     return found
 
 
+def images(markdown: str) -> tuple[list[tuple[str, str | None]], int]:
+    """Return every image as `(alt, target)`, and how many `![` openings were not understood.
+
+    Inline images, reference-style images and HTML `<img>` elements are all recognised. An
+    image whose reference has no definition, or an HTML image without `src`, has target
+    `None`. Any `![` that matches no recognised form is counted, so a check built on this
+    fails closed instead of skipping syntax it does not parse.
+    """
+    definitions = {
+        match["label"].strip().lower(): match["target"]
+        for match in _REFERENCE_DEFINITION.finditer(markdown)
+    }
+    found: list[tuple[str, str | None]] = []
+    understood = 0
+    for match in _INLINE_IMAGE.finditer(markdown):
+        found.append((match["alt"], match["target"]))
+        understood += 1
+    for match in _REFERENCE_IMAGE.finditer(markdown):
+        label = (match["label"] or match["alt"]).strip().lower()
+        found.append((match["alt"], definitions.get(label)))
+        understood += 1
+    for tag in _HTML_IMAGE.finditer(markdown):
+        attributes = {
+            attribute["name"].lower(): attribute["dq"]
+            if attribute["dq"] is not None
+            else attribute["sq"]
+            for attribute in _HTML_ATTRIBUTE.finditer(tag.group(0))
+        }
+        found.append((attributes.get("alt", ""), attributes.get("src")))
+    return found, markdown.count("![") - understood
+
+
 def image_problems(markdown: str, base: Path) -> list[str]:
-    """Return images without alt text, and relative images whose file does not exist."""
+    """Return images without alt text or target, missing files, and unrecognised syntax."""
+    found, unrecognised = images(markdown)
     problems: list[str] = []
-    for match in _IMAGE.finditer(markdown):
-        target = match["target"]
-        if not match["alt"].strip():
-            problems.append(f"{target} has no alt text")
-        if "://" not in target and not (base / target).is_file():
+    for alt, target in found:
+        name = target if target is not None else "an image"
+        if not alt.strip():
+            problems.append(f"{name} has no alt text")
+        if target is None:
+            problems.append(f"{name} has no target")
+        elif "://" not in target and not (base / target).is_file():
             problems.append(f"{target} does not exist")
+    if unrecognised:
+        problems.append(f"{unrecognised} image(s) in syntax the check does not understand")
     return problems
 
 
@@ -150,8 +196,30 @@ def test_milestone_references_and_inline_mermaid_are_reported() -> None:
     assert planning_mentions(text) == ["Milestone", "M1", "inline Mermaid block"]
 
 
+def test_a_mermaid_block_fenced_with_tildes_is_reported() -> None:
+    assert planning_mentions("~~~ Mermaid\nflowchart LR\n~~~\n") == ["inline Mermaid block"]
+
+
 def test_the_readme_embeds_no_images() -> None:
-    assert list(_IMAGE.finditer(_read("README.md"))) == []
+    found, unrecognised = images(_read("README.md"))
+
+    assert (found, unrecognised) == ([], 0)
+
+
+@pytest.mark.parametrize(
+    "markdown",
+    [
+        "![Diagram](docs/assets/architecture.svg)",
+        "![Diagram][arch]\n\n[arch]: docs/assets/architecture.svg",
+        '<img src="docs/assets/architecture.svg" alt="Diagram">',
+        "![Diagram]",
+    ],
+    ids=["inline", "reference", "html", "shortcut"],
+)
+def test_every_image_syntax_is_seen_by_the_readme_check(markdown: str) -> None:
+    found, unrecognised = images(markdown)
+
+    assert found or unrecognised
 
 
 # Invariant 1: every diagram image matches its current source.
@@ -219,7 +287,7 @@ def test_public_images_have_alt_text_and_exist() -> None:
         for document in PUBLIC_DOCUMENTS
     }
 
-    assert any(_IMAGE.search(_read(document)) for document in PUBLIC_DOCUMENTS)
+    assert any(images(_read(document))[0] for document in PUBLIC_DOCUMENTS)
     assert found == {document: [] for document in PUBLIC_DOCUMENTS}
 
 
@@ -229,6 +297,23 @@ def test_an_image_without_alt_text_or_target_is_reported(tmp_path: Path) -> None
     assert image_problems(markdown, tmp_path) == [
         "missing.svg has no alt text",
         "missing.svg does not exist",
+    ]
+
+
+def test_reference_and_html_images_are_checked_too(tmp_path: Path) -> None:
+    markdown = (
+        "![][logo]\n![Badge][undefined]\n<img src='gone.svg'>\n<IMG alt=\"x\">\n![Shortcut]\n\n"
+        "[logo]: logo.svg\n"
+    )
+
+    assert image_problems(markdown, tmp_path) == [
+        "logo.svg has no alt text",
+        "logo.svg does not exist",
+        "an image has no target",
+        "gone.svg has no alt text",
+        "gone.svg does not exist",
+        "an image has no target",
+        "1 image(s) in syntax the check does not understand",
     ]
 
 

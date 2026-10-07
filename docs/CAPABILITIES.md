@@ -12,7 +12,8 @@ New capabilities are announced in the [changelog](../CHANGELOG.md) when they shi
 
 ## Wi-Fi (Open Spherical Camera API)
 
-Wi-Fi is the only connection SphereLoom supports today.
+SphereLoom is designed to reach the camera over its Wi-Fi access point. Camera control over
+Wi-Fi is not available yet; the table shows the state of each capability on this connection.
 
 | Capability | Identifier | Status | Notes |
 | --- | --- | --- | --- |

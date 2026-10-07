@@ -12,10 +12,10 @@ capability can do today is listed in the [capability matrix](CAPABILITIES.md).
 
 ![Architecture diagram. An AI agent calls the SphereLoom tool surface over stdio. Inside the server, the tool surface works with the capability registry and the job engine. The tools dispatch to the OSC adapter, which reaches the Insta360 camera's Wi-Fi access point over HTTP at 192.168.42.1, and the job engine writes downloads to the workspace on your disk. Two backends built on vendor SDKs run as separate processes: a Camera SDK sidecar that reaches the camera over USB, and a Media SDK sidecar that receives export work from the job engine and writes stitched output to the workspace.](assets/architecture.svg)
 
-**Legend.** Green boxes with solid lines run inside the SphereLoom process and need no
-vendor SDK. Grey boxes with dashed lines run as separate sidecar processes and need an
-Insta360 SDK you obtain yourself. Rounded boxes are physical cameras; the cylinder is a
-directory on your disk. Arrows point in the direction a request travels.
+**Legend.** The green adapter runs inside the SphereLoom process and needs no vendor SDK.
+Grey boxes with dashed lines run as separate sidecar processes and need an Insta360 SDK you
+obtain yourself. Rounded boxes are physical cameras; the cylinder is a directory on your
+disk. Arrows point in the direction a request travels.
 
 The diagram shows request flow, not deployment: every box except the cameras runs on your
 own machine.
