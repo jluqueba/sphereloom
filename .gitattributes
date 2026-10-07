@@ -10,6 +10,10 @@
 # Makefiles require tabs and LF.
 Makefile text eol=lf
 
+# Diagram images are rendered from the `.mmd` source beside them (ADR-0015). Review the
+# source; GitHub collapses the generated image in diffs.
+docs/assets/*.svg text eol=lf linguist-generated=true
+
 # Binary assets must never be converted.
 *.png binary
 *.jpg binary

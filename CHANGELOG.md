@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Public capability page, `docs/CAPABILITIES.md`, listing every capability in one of three
+  states: available, not yet available, or not supported by the vendor API. Tests check
+  that every capability appears in one of those states and that public documents name no
+  milestones.
+- The architecture diagram in the developer guide is a committed SVG image rendered from a
+  Mermaid source by `scripts/render_diagrams.py`; a test fails if the source changes
+  without the image being regenerated.
 - Architecture decision record ADR-0016: public documentation and tool output describe what
   SphereLoom can do now, in three states (available, not yet available, not supported by
   the vendor API), with no milestones or roadmap. New capabilities are announced in this
@@ -77,6 +84,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- The README is a short general summary; architecture, requirements and getting started
+  moved to the developer guide, and the capability matrix moved to its own page. Public
+  documentation describes the current state and names no milestones.
 - Work is tracked in issues: every pull request closes one issue, and the milestone is set
   on the issue only, so a milestone's open and closed counts show tasks rather than
   counting each task twice. Documented in `CONTRIBUTING.md` and the pull-request template.
