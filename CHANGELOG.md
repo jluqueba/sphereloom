@@ -112,6 +112,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- CI skipped the test matrix when a pull request changed only files that tests read but
+  the change filter did not list: maintainer scripts, `.env.example`, the public
+  documentation and the site configuration. A change to one of them could break the rule a
+  test guards and still pass `ci-gate`. The filter now lists them, and a test fails if a
+  file the suite reads is ever missing from it.
 - The `ci-gate` status check searched the job results for `failure` or `cancelled` and
   passed otherwise, so it failed open: an empty or malformed result set, a result outside
   that pair, or a run in which change detection never ran all reported success. The gate

@@ -25,7 +25,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 SITE_CONFIG = REPOSITORY_ROOT / "_config.yml"
 
 #: Top-level entries published on purpose. Everything else must be excluded in `_config.yml`
-#: or be a dotfile or underscore file, which Jekyll skips unless it is listed in `include`.
+#: or be one of the hidden entries below.
 TOP_LEVEL_PUBLISHED = frozenset(
     {"README.md", "CHANGELOG.md", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md", "SECURITY.md"}
     | {"LICENSE", "docs"}
@@ -34,8 +34,18 @@ TOP_LEVEL_PUBLISHED = frozenset(
 #: Entries directly under `docs/` published on purpose.
 DOCS_PUBLISHED = frozenset({"CAPABILITIES.md", "DEVELOPER_GUIDE.md", "assets"})
 
-#: Dotfiles that may be listed under `include`, because they are safe to publish.
-SAFE_INCLUDES = frozenset({".env.example"})
+#: Top-level dot and underscore entries known to be inert. Jekyll skips such names, but not
+#: all of them are harmless: a root `.nojekyll` turns Jekyll off, so nothing is excluded and
+#: the whole tree is published, and directories such as `_posts` generate pages. A new one
+#: is therefore reported until it is classified here, rather than exempted by its prefix.
+HIDDEN_KNOWN = frozenset(
+    {".agerecipients", ".env.example", ".gitattributes", ".github", ".gitignore"}
+    | {".markdownlint-cli2.jsonc", ".markdownlint.json", "_config.yml"}
+)
+
+#: Dotfiles listed under `include`: exactly these, because public documentation links to
+#: them and each is safe to publish.
+REQUIRED_INCLUDES = frozenset({".env.example"})
 
 #: Exclude patterns this module evaluates exactly: a plain path, optionally ending in a slash,
 #: or `*.<extension>`. Anything else is rejected rather than approximated.
@@ -104,12 +114,12 @@ def unclassified_paths(paths: Iterable[str], config: Mapping[str, list[str]]) ->
                 if parts[1] not in DOCS_PUBLISHED and not is_excluded(entry, excludes):
                     problems.add(entry)
             continue
-        if top.startswith((".", "_")):
+        if top in HIDDEN_KNOWN:
             # Skipped by Jekyll unless forced in; forcing one in is a decision of its own.
-            if top in includes and top not in SAFE_INCLUDES:
+            if top in includes and top not in REQUIRED_INCLUDES:
                 problems.add(top)
             continue
-        if not is_excluded(top, excludes):
+        if top.startswith((".", "_")) or not is_excluded(top, excludes):
             problems.add(top)
     return sorted(problems)
 
@@ -186,14 +196,24 @@ def test_dropping_the_internal_exclusion_is_reported() -> None:
     assert "docs/internal" in unclassified_paths(tracked_paths(), config)
 
 
-# Invariant 3: only safe dotfiles are forced into the site.
+@pytest.mark.parametrize(
+    "path",
+    [".nojekyll", "_posts/2026-01-01-note.md", "_includes/head.html", ".well-known/x"],
+)
+def test_an_unknown_hidden_entry_is_reported_whatever_its_prefix(path: str) -> None:
+    paths = [*tracked_paths(), path]
+
+    assert unclassified_paths(paths, load_config()) == [path.split("/")[0]]
 
 
-def test_only_safe_dotfiles_are_included() -> None:
-    assert set(load_config()["include"]) <= SAFE_INCLUDES
+# Invariant 3: exactly the required dotfiles are forced into the site.
 
 
-def test_including_a_dotfile_outside_the_safe_list_is_reported() -> None:
+def test_exactly_the_required_dotfiles_are_included() -> None:
+    assert set(load_config()["include"]) == REQUIRED_INCLUDES
+
+
+def test_including_a_dotfile_outside_the_required_list_is_reported() -> None:
     config = load_config()
     config["include"] = [*config["include"], ".agerecipients"]
 

@@ -44,14 +44,23 @@ jobs:
         id: filter
         with:
           filters: |
+            # Every file the test suite reads must be listed here, or a pull request that
+            # changes only that file skips the tests that guard it while ci-gate still
+            # passes. tests/unit/test_ci_paths.py enforces this.
             code:
               - 'src/**'
               - 'tests/**'
+              - 'scripts/**'
               - 'examples/**'
               - 'pyproject.toml'
               - 'ruff.toml'
               - 'mypy.ini'
               - '.github/workflows/**'
+              - '.env.example'
+              - '_config.yml'
+              - '*.md'
+              - 'docs/*.md'
+              - 'docs/assets/**'
             docs:
               - '**/*.md'
               - '.markdownlint.json'
