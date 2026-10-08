@@ -1,0 +1,12 @@
+{
+  "theme": "default",
+  "look": "classic",
+  "fontFamily": "arial, sans-serif",
+  "themeVariables": {
+    "fontFamily": "arial, sans-serif"
+  },
+  "htmlLabels": false,
+  "flowchart": {
+    "htmlLabels": false
+  }
+}

@@ -3,11 +3,25 @@
 Everything you need to work on SphereLoom. This is the public companion to the
 [README](../README.md): the README says what the project is, this says how to build it.
 
-## What SphereLoom is, architecturally
+## Architecture
 
 SphereLoom is an MCP server that exposes one coherent tool surface for controlling Insta360
-cameras and processing their 360 media, regardless of how the camera is connected. It
-targets Insta360 hardware specifically; it is not a generic 360 camera tool.
+cameras and processing their 360° media, regardless of how the camera is connected. It
+targets Insta360 hardware specifically; it is not a generic 360° camera tool. What each
+capability can do today is listed in the [capability matrix](CAPABILITIES.md).
+
+![Architecture diagram. An AI agent calls the SphereLoom tool surface over stdio. Inside the server, the tool surface works with the capability registry and the job engine. The tools dispatch to the OSC adapter, which reaches the Insta360 camera's Wi-Fi access point over HTTP at 192.168.42.1, and the job engine writes downloads to the workspace on your disk. Two backends built on vendor SDKs run as separate processes: a Camera SDK sidecar that reaches the camera over USB, and a Media SDK sidecar that receives export work from the job engine and writes stitched output to the workspace.](assets/architecture.svg)
+
+**Legend.** The green adapter runs inside the SphereLoom process and needs no vendor SDK.
+Grey boxes with dashed lines run as separate sidecar processes and need an Insta360 SDK you
+obtain yourself. Rounded boxes are physical cameras; the cylinder is a directory on your
+disk. Arrows point in the direction a request travels.
+
+The diagram shows request flow, not deployment: every box except the cameras runs on your
+own machine.
+
+The same structure, as packages. This is the design; some packages are not written yet, and
+the [capability matrix](CAPABILITIES.md) shows what works today.
 
 ```text
 MCP client ──stdio──▶ SphereLoom server
@@ -17,26 +31,43 @@ MCP client ──stdio──▶ SphereLoom server
                           ├─ jobs/          long operations, with state
                           ├─ security/      path jail, confirmations, transport auth
                           └─ adapters/
-                               ├─ osc/      Wi-Fi HTTP  (Milestone 1)
+                               ├─ osc/      Wi-Fi HTTP
                                ├─ fake/     loopback test double
-                               └─ usb/      sidecar process (Milestone 3)
+                               └─ usb/      Camera SDK sidecar process
 ```
 
-Four ideas carry most of the design:
+### Design principles
 
 1. **Ports and adapters.** The tool layer depends on the `CameraPort` and `MediaPort`
    protocols and nothing else. Swapping Wi-Fi for USB changes no tool.
 2. **Capabilities are data.** A backend declares what it supports. An unsupported operation
    returns a structured error that explains why and links to the Insta360 documentation,
    rather than failing opaquely or timing out.
-3. **Long operations are jobs.** Downloads and exports return a job identifier immediately.
-   Responses carry paths and metadata, never media bytes.
-4. **The core is deterministic.** No language model runs inside the server. It needs no
-   model credentials to start and costs nothing to poll.
+3. **Long operations are jobs.** Downloads and exports return a job identifier immediately
+   that you poll and can cancel. Responses carry paths and metadata, never media bytes.
+4. **Vendor SDKs run in sidecars.** Each runs in its own process, so a native crash cannot
+   end your agent session, and SphereLoom's MIT code never links EULA-bound binaries.
+5. **The core is deterministic.** No language model runs inside the server. It needs no
+   model credentials to start and costs nothing to poll; any MCP client works.
+6. **Safe by default.** stdio transport with no listener, a workspace path jail,
+   confirmation tokens for destructive actions, bounded concurrency and redacted logs. HTTP
+   access is opt-in and requires a loopback bind plus a token.
+7. **Testable without hardware.** A protocol-faithful fake camera runs the whole suite and
+   doubles as a demo backend.
+
+## Requirements
+
+- Python 3.12 or 3.13, installed with [`uv`](https://docs.astral.sh/uv/).
+- Wi-Fi control is pure Python and runs on Windows, Linux and macOS.
+- An **Insta360 camera** supporting the Open Spherical Camera API. Insta360 lists ONE X,
+  ONE X2, ONE R, ONE RS, X3, X4, X4 Air and X5; development and testing target the **X5**.
+- Features built on an Insta360 desktop SDK need a copy of that SDK you obtain and install
+  yourself, and those SDKs do not support macOS. Media processing additionally needs a
+  discrete NVIDIA GPU.
 
 ## Getting started
 
-Requirements: Python 3.12 or 3.13 and [`uv`](https://docs.astral.sh/uv/). No camera needed.
+No camera is needed to develop or run the test suite.
 
 ```bash
 git clone https://github.com/jluqueba/sphereloom.git
@@ -62,12 +93,16 @@ make coverage     # the same with a coverage report
 make docs-lint    # markdownlint, needs Node
 ```
 
-Confirm the server runs:
+Confirm the server runs, and validate your configuration without launching it:
 
 ```bash
 uv run --no-sync sphereloom --version
 uv run --no-sync sphereloom --check-config
 ```
+
+To register SphereLoom with an MCP client, run `sphereloom` over stdio. Configuration is
+read from `SPHERELOOM_*` environment variables, every one of which is documented in
+[`.env.example`](../.env.example).
 
 ## Project layout
 
@@ -86,6 +121,8 @@ tests/
   integration/    real hardware, opt-in only
 docs/
   DEVELOPER_GUIDE.md   this file
+  CAPABILITIES.md      what each capability can do today
+  assets/              diagrams: Mermaid source (.mmd) and the SVG rendered from it
   internal/            design records, encrypted at rest
 ```
 
@@ -139,6 +176,23 @@ rails protect your workflow and your filesystem:
 
 One thing to be clear about: the camera's own API has no authentication. Anything on its
 access point can command it. SphereLoom cannot fix that, and does not pretend to.
+
+## Diagrams
+
+Public documentation embeds diagrams as committed SVG images rendered from a Mermaid source
+kept beside them in `docs/assets/`, never as inline Mermaid blocks: GitHub renders Mermaid,
+but other places the documentation is shown do not. Keep diagrams in this guide, not in the
+README.
+
+Edit the `.mmd` file, then regenerate the image with Node.js installed:
+
+```bash
+python scripts/render_diagrams.py
+```
+
+Each image records the digest of the source it was rendered from, and
+`tests/unit/test_public_docs.py` fails when a source changes without its image being
+regenerated. Give every embedded diagram alt text that states what it shows.
 
 ## Internal documentation
 
