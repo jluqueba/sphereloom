@@ -177,6 +177,19 @@ rails protect your workflow and your filesystem:
 One thing to be clear about: the camera's own API has no authentication. Anything on its
 access point can command it. SphereLoom cannot fix that, and does not pretend to.
 
+## Public site
+
+The README and the public guides are published with GitHub Pages straight from `main`.
+GitHub builds the site with Jekyll on every merge, configured by `_config.yml`; no workflow
+in this repository is involved.
+
+Jekyll publishes everything it is not told to exclude, so `tests/unit/test_public_site.py`
+fails when a tracked top-level path, or an entry under `docs/`, is neither published on
+purpose nor excluded. When you add a code or tooling directory, add it to the `exclude` list
+in `_config.yml`. The same test fails on Liquid template delimiters in published Markdown (two
+opening braces, or an opening brace followed by a percent sign), because Jekyll evaluates
+them; describe such syntax in words or link to the file instead.
+
 ## Diagrams
 
 Public documentation embeds diagrams as committed SVG images rendered from a Mermaid source

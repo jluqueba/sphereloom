@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Public documentation site configuration for GitHub Pages (`_config.yml`): the README is
+  the home page, and only public documentation is published. A test fails when a new
+  top-level path is neither published on purpose nor excluded, when internal documents
+  would be published, or when published Markdown contains text Jekyll would evaluate as a
+  template.
 - Public capability page, `docs/CAPABILITIES.md`, listing every capability in one of three
   states: available, not yet available, or not supported by the vendor API. Tests check
   that every capability appears in one of those states and that public documents name no

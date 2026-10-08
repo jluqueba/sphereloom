@@ -1,0 +1,35 @@
+# GitHub Pages configuration (branch mode). See ADR-0015.
+#
+# GitHub builds the `main` branch with Jekyll on every push and serves the result, with
+# README.md as the home page. No workflow in this repository is involved.
+#
+# Only public documentation is published. Jekyll offers an exclude list, not an allow-list,
+# so `tests/unit/test_public_site.py` fails when a tracked top-level path is neither
+# published on purpose nor excluded here. Add every new code or tooling directory below.
+
+title: SphereLoom
+description: >-
+  MCP server designed to let AI agents control Insta360 cameras and process 360° media
+  locally.
+  Independent project; not affiliated with or endorsed by Arashi Vision Inc.
+theme: jekyll-theme-cayman
+show_downloads: false
+
+# Jekyll skips dotfiles. List only dotfiles that public documentation links to and that are
+# safe to publish.
+include:
+  - .env.example
+
+exclude:
+  # Encrypted at rest (ADR-0014). The build would otherwise publish age ciphertext as pages.
+  - docs/internal/
+  - src/
+  - tests/
+  - scripts/
+  - examples/
+  - htmlcov/
+  - "*.py"
+  - "*.toml"
+  - "*.ini"
+  - "*.ps1"
+  - Makefile
