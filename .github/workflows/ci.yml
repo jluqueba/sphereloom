@@ -43,24 +43,26 @@ jobs:
       - uses: dorny/paths-filter@v4
         id: filter
         with:
+          # A file counts for a filter when it matches a pattern and no negated one. The
+          # default quantifier treats a negation as one more alternative, so it excludes
+          # nothing.
+          predicate-quantifier: some-with-excludes
           filters: |
-            # Every file the test suite reads must be listed here, or a pull request that
-            # changes only that file skips the tests that guard it while ci-gate still
-            # passes. tests/unit/test_ci_paths.py enforces this.
+            # The test matrix runs for every change except an explicit list of paths no
+            # test reads. A skip-list rather than an allow-list fails closed: a new file
+            # or directory runs the tests that would reject it. Adding an exclusion is a
+            # deliberate decision, enforced by tests/unit/test_ci_paths.py.
             code:
-              - 'src/**'
-              - 'tests/**'
-              - 'scripts/**'
-              - 'examples/**'
-              - 'pyproject.toml'
-              - 'ruff.toml'
-              - 'mypy.ini'
-              - '.github/workflows/**'
-              - '.env.example'
-              - '_config.yml'
-              - '*.md'
-              - 'docs/*.md'
-              - 'docs/assets/**'
+              - '**'
+              - '!docs/internal/**'
+              - '!.github/instructions/**'
+              - '!.github/ISSUE_TEMPLATE/**'
+              - '!.github/copilot-instructions.md'
+              - '!.github/PULL_REQUEST_TEMPLATE.md'
+              - '!.github/CODEOWNERS'
+              - '!.github/dependabot.yml'
+              - '!.markdownlint.json'
+              - '!.markdownlint-cli2.jsonc'
             docs:
               - '**/*.md'
               - '.markdownlint.json'

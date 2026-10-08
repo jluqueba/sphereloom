@@ -89,7 +89,7 @@ Before opening a PR, make sure:
 - The PR closes exactly one issue with `Closes #N` in its description, and carries that issue's `area:` and type labels.
 - The suite passes on **both** operating systems in the CI matrix.
 
-The repository uses a single required status check named `ci-gate`. The CI design uses change detection so a PR that touches nothing the tests read, such as the internal design documents or the instruction files, skips the test matrix while the required gate still reports success. Public documentation is checked by tests, so changing it runs the suite. The gate is an allow-list: it passes only when every job it depends on reported `success`, or `skipped` because the change did not touch that area. Any other result, including one GitHub adds in the future, fails it. PRs are squash-merged using the PR title.
+The repository uses a single required status check named `ci-gate`. The CI design uses change detection: the test matrix runs for every change except an explicit list of paths no test reads, such as the internal design documents and the instruction files, so a PR confined to those skips it while the required gate still reports success. Public documentation is checked by tests, so changing it runs the suite. The gate is an allow-list: it passes only when every job it depends on reported `success`, or `skipped` because the change did not touch that area. Any other result, including one GitHub adds in the future, fails it. PRs are squash-merged using the PR title.
 
 ### Keep pull requests small
 
