@@ -9,6 +9,9 @@
 #   so a required check never hangs pending. The other required check,
 #   `copilot-review-gate`, comes from its own workflow (ADR-0019).
 # * Permissions start empty and are granted per job.
+# * Every action is pinned to a full commit SHA, with its release in a trailing comment, so
+#   a moved or compromised tag cannot change what runs. Dependabot updates both together,
+#   and tests/unit/test_codebase_rules.py rejects an unpinned `uses:`.
 # * Checks run with `--no-sync` against an environment installed in an explicit step, so a
 #   check can never silently re-resolve dependencies mid-run.
 
@@ -41,8 +44,8 @@ jobs:
       code: ${{ steps.filter.outputs.code }}
       docs: ${{ steps.filter.outputs.docs }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dorny/paths-filter@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           # A file counts for a filter when it matches a pattern and no negated one. The
@@ -86,12 +89,10 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv
-        # Pinned to an exact release: setup-uv stopped publishing major-version aliases
-        # after v7, and an exact pin is the safer supply-chain choice regardless.
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -126,9 +127,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Lint markdown
-        uses: DavidAnson/markdownlint-cli2-action@v24
+        uses: DavidAnson/markdownlint-cli2-action@21c1be1b93ad9ed58fa840aacc3f279cde2a72ff # v24.2.0
 
   ci-gate:
     # The required status check for everything this workflow runs. It depends on every other
