@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Required `copilot-review-gate` status check: a pull request cannot be merged until
+  Copilot has reviewed its latest commit. The check reruns on every push and every
+  submitted review, fails closed on anything it cannot read, and exempts pull requests
+  opened by Dependabot. Architecture decision record ADR-0019 records why it is a second
+  required check rather than part of `ci-gate`.
 - Public documentation site configuration for GitHub Pages (`_config.yml`): the README is
   the home page, and only public documentation is published. A test fails when a new
   top-level path is neither published on purpose nor excluded, when internal documents
