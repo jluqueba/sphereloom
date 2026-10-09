@@ -89,7 +89,7 @@ Before opening a PR, make sure:
 - The PR closes exactly one issue with `Closes #N` in its description, and carries that issue's `area:` and type labels.
 - The suite passes on **both** operating systems in the CI matrix.
 
-The repository uses a single required status check named `ci-gate`. The CI design uses change detection: the test matrix runs for every change except an explicit list of paths no test reads, such as the internal design documents and the instruction files, so a PR confined to those skips it while the required gate still reports success. Public documentation is checked by tests, so changing it runs the suite. The gate is an allow-list: it passes only when every job it depends on reported `success`, or `skipped` because the change did not touch that area. Any other result, including one GitHub adds in the future, fails it. PRs are squash-merged using the PR title.
+The repository requires two status checks. `ci-gate` covers everything CI runs, and `copilot-review-gate` waits for the automated review described below. The CI design uses change detection: the test matrix runs for every change except an explicit list of paths no test reads, such as the internal design documents and the instruction files, so a PR confined to those skips it while the required gate still reports success. Public documentation is checked by tests, so changing it runs the suite. The gate is an allow-list: it passes only when every job it depends on reported `success`, or `skipped` because the change did not touch that area. Any other result, including one GitHub adds in the future, fails it. PRs are squash-merged using the PR title.
 
 ### Keep pull requests small
 
@@ -134,6 +134,8 @@ Copilot code review is configured as a branch ruleset with `review_on_push`, so 
 > A PR is ready to merge when CI is green, the most recent **Copilot** review examined the current head commit, and that review contains **no unresolved correctness or security finding**.
 
 Resolving the findings from one review and merging as soon as CI turns green is not enough. The push that fixed those findings starts another review, and that review can surface new ones — including problems introduced by the fix itself.
+
+The required `copilot-review-gate` check enforces the first half of that condition. It runs on every push and on every submitted review, and passes only once a Copilot review of the current head commit exists, so a pull request cannot be merged while the review of its latest commit is still running. It does not read the findings: open review threads block the merge through the rule that every conversation is resolved, and findings reported only in the review body still have to be read and triaged by hand. Pull requests opened by Dependabot pass without a review, and drafts fail until they are marked ready. If Copilot never reviews a push, for example after an empty commit, the check fails after 30 minutes: request a review from Copilot, and rerun the check if the submitted review does not start it.
 
 The sequence to follow:
 

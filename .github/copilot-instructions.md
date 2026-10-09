@@ -182,7 +182,7 @@
 ## GitHub and CI conventions
 
 - Create or change GitHub Actions workflows only when a task explicitly calls for it, such as task M0-05 in `docs/internal/features/osc-camera-control/tasks.md`.
-- Planned CI uses a single required status check named `ci-gate`.
+- CI uses a single required status check named `ci-gate`. A second required check, `copilot-review-gate`, passes only once Copilot has reviewed the head commit (ADR-0019).
 - The gate is fed by change detection using `dorny/paths-filter`.
 - Documentation-only PRs may skip heavy jobs while still reporting `ci-gate` success.
 - Workflow permissions should default to `{}` and be narrowed per job.
@@ -218,6 +218,7 @@ Milestones double as release groupings. M2 is the first released version (0.1.0)
 - Copilot code review runs on every push to an open pull request (`review_on_push`).
 - Read every review in full, then **triage each finding** before acting on it. Only correctness and security findings block a merge; see "Triage findings before acting" below.
 - A pull request is ready to merge when CI is green, the most recent **Copilot** review examined the current head commit, and that review, including its "Previously missed" section, contains **no unresolved correctness or security finding**.
+- The required `copilot-review-gate` check enforces that the review of the head commit exists, not what it found. Still read its body and threads, and triage every finding. If Copilot never reviews a push, request a review again, and rerun the check if the submitted review does not start it.
 - A fixing push starts a new review, which may surface new problems, including ones the fix introduced. Wait for it and triage it the same way before merging.
 - Do not widen the scope of a pull request while it is under review.
 - Allow at most three review cycles per pull request. If blocking findings remain after the third, stop, explain why the change is not converging, and propose splitting or narrowing it instead of iterating further.
