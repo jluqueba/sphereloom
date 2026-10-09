@@ -188,6 +188,7 @@
 - Workflow permissions should default to `{}` and be narrowed per job.
 - Workflows should use concurrency with `cancel-in-progress`.
 - Workflows should set `timeout-minutes`.
+- Pin every action to a full commit SHA with its release in a trailing comment (`@<sha> # vX.Y.Z`); the codebase rule tests reject anything else.
 - Keep Dependabot updates grouped and conventional-commit friendly.
 
 ## Pull request scope

@@ -94,6 +94,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Every GitHub Action the workflows run is pinned to a full commit SHA, with its release in
+  a comment that Dependabot keeps up to date, so a moved or compromised tag cannot change
+  what CI runs. A test rejects any action that is not pinned this way.
 - The feature request form offers one area per `area:` label, including the USB Camera SDK
   backend, Media SDK processing and documentation, so a reported area maps to exactly one
   label. The contributing guide lists the mapping.
