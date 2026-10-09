@@ -43,15 +43,26 @@ jobs:
       - uses: dorny/paths-filter@v4
         id: filter
         with:
+          # A file counts for a filter when it matches a pattern and no negated one. The
+          # default quantifier treats a negation as one more alternative, so it excludes
+          # nothing.
+          predicate-quantifier: some-with-excludes
           filters: |
+            # The test matrix runs for every change except an explicit list of paths no
+            # test reads. A skip-list rather than an allow-list fails closed: a new file
+            # or directory runs the tests that would reject it. Adding an exclusion is a
+            # deliberate decision, enforced by tests/unit/test_ci_paths.py.
             code:
-              - 'src/**'
-              - 'tests/**'
-              - 'examples/**'
-              - 'pyproject.toml'
-              - 'ruff.toml'
-              - 'mypy.ini'
-              - '.github/workflows/**'
+              - '**'
+              - '!docs/internal/**'
+              - '!.github/instructions/**'
+              - '!.github/ISSUE_TEMPLATE/**'
+              - '!.github/copilot-instructions.md'
+              - '!.github/PULL_REQUEST_TEMPLATE.md'
+              - '!.github/CODEOWNERS'
+              - '!.github/dependabot.yml'
+              - '!.markdownlint.json'
+              - '!.markdownlint-cli2.jsonc'
             docs:
               - '**/*.md'
               - '.markdownlint.json'

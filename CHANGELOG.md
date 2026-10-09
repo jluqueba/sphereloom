@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Public documentation site configuration for GitHub Pages (`_config.yml`): the README is
+  the home page, and only public documentation is published. A test fails when a new
+  top-level path is neither published on purpose nor excluded, when internal documents
+  would be published, or when published Markdown contains text Jekyll would evaluate as a
+  template.
 - Public capability page, `docs/CAPABILITIES.md`, listing every capability in one of three
   states: available, not yet available, or not supported by the vendor API. Tests check
   that every capability appears in one of those states and that public documents name no
@@ -107,6 +112,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- CI ran the test matrix only for paths on an allow-list, so a pull request changing only a
+  file the tests read but nobody listed (maintainer scripts, `.env.example`, the public
+  documentation, the site configuration) or adding a new directory skipped the tests that
+  guard it, while `ci-gate` still passed. The matrix now runs for every change except an
+  explicit list of paths no test reads, and a test fails if that list ever covers a file the
+  suite reads. The documentation filter's exclusion of internal documents also took effect
+  for the first time.
 - The `ci-gate` status check searched the job results for `failure` or `cancelled` and
   passed otherwise, so it failed open: an empty or malformed result set, a result outside
   that pair, or a run in which change detection never ran all reported success. The gate
