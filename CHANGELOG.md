@@ -97,8 +97,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The feature request form offers one area per `area:` label, including the USB Camera SDK
   backend, Media SDK processing and documentation, so a reported area maps to exactly one
   label. The contributing guide lists the mapping.
-- Every page of the public documentation site carries the full trademark notice in its
-  header.
+- Every page of the public documentation site carries the README's trademark notice in its
+  header, and a test fails if the two drift apart.
 - The README is a short general summary; architecture, requirements and getting started
   moved to the developer guide, and the capability matrix moved to its own page. Public
   documentation describes the current state and names no milestones.
@@ -122,6 +122,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The published site served the contributing guide and the code of conduct as raw
+  Markdown, because GitHub Pages does not render files with those names unless they are
+  listed for inclusion. Both are now rendered pages, and a test fails if a published file
+  with such a name would be served as raw text.
 - CI ran the test matrix only for paths on an allow-list, so a pull request changing only a
   file the tests read but nobody listed (maintainer scripts, `.env.example`, the public
   documentation, the site configuration) or adding a new directory skipped the tests that
