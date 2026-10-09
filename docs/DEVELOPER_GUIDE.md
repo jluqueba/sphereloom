@@ -185,14 +185,22 @@ in this repository is involved.
 
 Jekyll publishes everything it is not told to exclude, so `tests/unit/test_public_site.py`
 fails when a tracked top-level path, or an entry under `docs/`, is neither published on
-purpose nor excluded. When you add a code or tooling directory, add it to the `exclude` list
-in `_config.yml`. Jekyll skips entries whose names start with a dot or an underscore, so a
-new one of those is not excluded but classified instead: add it to the test's list of known
-hidden entries or, if it must be published, to the `include` list in `_config.yml` and the
-test's list of required includes. The same
-test fails on Liquid template delimiters in published Markdown (two opening braces, or an
-opening brace followed by a percent sign), because Jekyll evaluates them; describe such
-syntax in words or link to the file instead.
+purpose nor excluded:
+
+- A new top-level code or tooling directory goes in the `exclude` list in `_config.yml`.
+- A new top-level entry whose name starts with a dot or an underscore is skipped by Jekyll,
+  so it is classified rather than excluded: add it to the test's list of known hidden
+  entries or, if it must be published, to the `include` list and the test's list of
+  required includes.
+- A new entry under `docs/` goes either in the test's list of published `docs/` entries or
+  in the `exclude` list.
+- A published Markdown file named like a community file, such as `CONTRIBUTING.md`, is
+  served as raw text unless it is listed under `include` or starts with front matter.
+
+The same test fails on Liquid template delimiters in published Markdown (two opening braces,
+or an opening brace followed by a percent sign), because Jekyll evaluates them; describe
+such syntax in words or link to the file instead. It also checks that the site header, shown
+on every page, repeats the README's trademark notice.
 
 ## Diagrams
 

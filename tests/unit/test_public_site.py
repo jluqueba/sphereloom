@@ -14,9 +14,9 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from fnmatch import fnmatchcase
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 import yaml
@@ -43,9 +43,25 @@ HIDDEN_KNOWN = frozenset(
     | {".markdownlint-cli2.jsonc", ".markdownlint.json", "_config.yml"}
 )
 
-#: Dotfiles listed under `include`: exactly these, because public documentation links to
-#: them and each is safe to publish.
-REQUIRED_INCLUDES = frozenset({".env.example"})
+#: Entries listed under `include`: exactly these. Dotfiles that public documentation links
+#: to and that are safe to publish, and published community files that would otherwise be
+#: served as raw text (see `RAW_UNLESS_INCLUDED`).
+REQUIRED_INCLUDES = frozenset({".env.example", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md"})
+
+#: File names, compared without extension and case, that GitHub Pages' optional front matter
+#: plugin (jekyll-optional-front-matter 0.3.2, pinned by github-pages 232) refuses to turn
+#: into pages. A published Markdown file with one of these names is served as raw text unless
+#: it has front matter or is listed under `include`. The root README is the exception: the
+#: readme-index plugin renders it as the home page.
+RAW_UNLESS_INCLUDED = frozenset(
+    {"README", "LICENSE", "LICENCE", "COPYING", "CODE_OF_CONDUCT", "CONTRIBUTING"}
+    | {"ISSUE_TEMPLATE", "PULL_REQUEST_TEMPLATE"}
+)
+_HOME_PAGE = "README.md"
+
+#: The README's trademark notice, the paragraph the site header must repeat.
+_NOTICE_START = "Insta360 is a trademark of Arashi Vision Inc."
+_SENTENCE_BREAK = re.compile(r"(?<=\.)\s+(?=[A-Z])")
 
 #: Exclude patterns this module evaluates exactly: a plain path, optionally ending in a slash,
 #: or `*.<extension>`. Anything else is rejected rather than approximated.
@@ -140,6 +156,61 @@ def liquid_markers(markdown: str) -> list[int]:
     return [number for number, line in enumerate(markdown.splitlines(), 1) if _LIQUID.search(line)]
 
 
+def served_as_raw_text(
+    documents: Iterable[str], includes: Iterable[str], has_front_matter: Callable[[str], bool]
+) -> list[str]:
+    """Return published Markdown files GitHub Pages would serve unrendered."""
+    listed = set(includes)
+    return [
+        path
+        for path in documents
+        if path != _HOME_PAGE
+        and PurePosixPath(path).stem.upper() in RAW_UNLESS_INCLUDED
+        and path not in listed
+        and not has_front_matter(path)
+    ]
+
+
+def starts_with_front_matter(markdown: str) -> bool:
+    """Whether a document opens with a front matter block, which makes Jekyll render it."""
+    lines = [line.strip() for line in markdown.splitlines()]
+    return bool(lines) and lines[0] == "---" and "---" in lines[1:]
+
+
+def file_has_front_matter(path: str) -> bool:
+    return starts_with_front_matter((REPOSITORY_ROOT / path).read_text("utf-8"))
+
+
+def readme_notice(markdown: str) -> str:
+    """Return the trademark notice paragraph from the README, joined onto one line."""
+    lines = markdown.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith(f"> {_NOTICE_START}"))
+    paragraph = []
+    for line in lines[start:]:
+        if not line.startswith(">") or not line[1:].strip():
+            break
+        paragraph.append(line[1:].strip())
+    return " ".join(paragraph)
+
+
+def site_description(path: Path = SITE_CONFIG) -> str:
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert isinstance(raw, dict)
+    description = raw["description"]
+    assert isinstance(description, str)
+    return " ".join(description.split())
+
+
+def missing_notice(description: str, notice: str) -> list[str]:
+    """Return the notice's trademark and independence sentences the description lacks.
+
+    The README's last sentence, on descriptive use of the name, explains the page rather
+    than the project, so the header carries only the first two.
+    """
+    required = _SENTENCE_BREAK.split(notice)[:2]
+    return [sentence for sentence in required if sentence not in description]
+
+
 # Invariant 1: nothing is published by omission.
 
 
@@ -206,10 +277,10 @@ def test_an_unknown_hidden_entry_is_reported_whatever_its_prefix(path: str) -> N
     assert unclassified_paths(paths, load_config()) == [path.split("/")[0]]
 
 
-# Invariant 3: exactly the required dotfiles are forced into the site.
+# Invariant 3: exactly the required entries are forced into the site.
 
 
-def test_exactly_the_required_dotfiles_are_included() -> None:
+def test_exactly_the_required_entries_are_included() -> None:
     assert set(load_config()["include"]) == REQUIRED_INCLUDES
 
 
@@ -250,3 +321,67 @@ def test_liquid_delimiters_are_reported() -> None:
     markdown = "Plain text.\nThe gate reads ${{ toJSON(needs) }}.\n{% raw %}\n"
 
     assert liquid_markers(markdown) == [2, 3]
+
+
+# Invariant 6: every published Markdown page is rendered, none is served as raw text.
+
+
+def test_no_published_markdown_is_served_as_raw_text() -> None:
+    config = load_config()
+    documents = published_markdown(tracked_paths(), config)
+
+    assert {"CONTRIBUTING.md", "CODE_OF_CONDUCT.md"} <= set(documents)
+    assert served_as_raw_text(documents, config["include"], file_has_front_matter) == []
+
+
+@pytest.mark.parametrize(
+    "path", ["CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "docs/contributing.md", "docs/README.md"]
+)
+def test_a_community_file_name_without_include_or_front_matter_is_reported(path: str) -> None:
+    includes = [item for item in load_config()["include"] if item != path]
+
+    assert served_as_raw_text([path], includes, lambda _: False) == [path]
+
+
+def test_front_matter_is_an_accepted_alternative_to_include() -> None:
+    assert served_as_raw_text(["docs/contributing.md"], [], lambda _: True) == []
+
+
+@pytest.mark.parametrize(
+    ("markdown", "expected"),
+    [
+        ("---\n---\n# Title\n", True),
+        ("---\ntitle: Contributing\n---\n# Title\n", True),
+        ("# Title\n\n---\n\nText\n---\n", False),
+        ("---\ntitle: never closed\n# Title\n", False),
+        ("", False),
+    ],
+    ids=["empty-block", "with-title", "rule-later", "unclosed", "empty-file"],
+)
+def test_front_matter_is_recognised_only_at_the_start_of_a_document(
+    markdown: str, expected: bool
+) -> None:
+    assert starts_with_front_matter(markdown) is expected
+
+
+def test_the_home_page_and_ordinary_names_are_not_reported() -> None:
+    documents = ["README.md", "CHANGELOG.md", "docs/DEVELOPER_GUIDE.md"]
+
+    assert served_as_raw_text(documents, [], lambda _: False) == []
+
+
+# Invariant 7: the header of every page carries the README's trademark notice.
+
+
+def test_the_site_header_carries_the_readme_trademark_notice() -> None:
+    notice = readme_notice((REPOSITORY_ROOT / "README.md").read_text("utf-8"))
+
+    assert notice.startswith(_NOTICE_START)
+    assert missing_notice(site_description(), notice) == []
+
+
+def test_a_shortened_notice_in_the_site_header_is_reported() -> None:
+    notice = readme_notice((REPOSITORY_ROOT / "README.md").read_text("utf-8"))
+    shortened = site_description().replace("sponsored by, ", "")
+
+    assert len(missing_notice(shortened, notice)) == 1

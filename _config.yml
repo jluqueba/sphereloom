@@ -11,15 +11,21 @@ title: SphereLoom
 description: >-
   MCP server designed to let AI agents control Insta360 cameras and process 360° media
   locally.
-  Insta360 is a trademark of Arashi Vision Inc. SphereLoom is an independent project,
-  not affiliated with or endorsed by Arashi Vision Inc.
+  Insta360 is a trademark of Arashi Vision Inc. SphereLoom is an independent, unaffiliated
+  project and is neither endorsed by, sponsored by, nor associated with Arashi Vision Inc.
 theme: jekyll-theme-cayman
 show_downloads: false
 
 # Jekyll skips dotfiles. List only dotfiles that public documentation links to and that are
 # safe to publish.
+#
+# GitHub Pages serves Markdown files named like community files (CONTRIBUTING,
+# CODE_OF_CONDUCT and others) as raw text unless they carry front matter or are listed here,
+# so the published ones are listed rather than edited.
 include:
   - .env.example
+  - CODE_OF_CONDUCT.md
+  - CONTRIBUTING.md
 
 exclude:
   # Encrypted at rest (ADR-0014). The build would otherwise publish age ciphertext as pages.
