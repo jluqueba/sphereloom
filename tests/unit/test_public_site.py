@@ -71,6 +71,15 @@ _PATTERN_FORM = re.compile(r"^(?:[\w.-]+(?:/[\w.-]+)*/?|\*\.\w+)$")
 #: so either sequence in a published page breaks the build or silently drops text.
 _LIQUID = re.compile(r"\{\{|\{%")
 
+#: Jekyll 3.10's own tests for front matter, copied rather than approximated: a file is read
+#: as a page only when its first line is `---`, from column zero (`Utils.has_yaml_header?`),
+#: and the block is closed by `---` or `...` at the start of a line
+#: (`Document::YAML_FRONT_MATTER_REGEXP`). Requiring both errs towards reporting a file.
+_JEKYLL_HEADER = re.compile(r"\A---\s*\r?\n")
+_JEKYLL_FRONT_MATTER = re.compile(
+    r"\A(---\s*\n.*?\n?)^((---|\.\.\.)\s*$\n?)", re.DOTALL | re.MULTILINE
+)
+
 
 def load_config(path: Path = SITE_CONFIG) -> dict[str, list[str]]:
     """Read the `include` and `exclude` lists from a Jekyll configuration file."""
@@ -173,8 +182,7 @@ def served_as_raw_text(
 
 def starts_with_front_matter(markdown: str) -> bool:
     """Whether a document opens with a front matter block, which makes Jekyll render it."""
-    lines = [line.strip() for line in markdown.splitlines()]
-    return bool(lines) and lines[0] == "---" and "---" in lines[1:]
+    return bool(_JEKYLL_HEADER.match(markdown) and _JEKYLL_FRONT_MATTER.match(markdown))
 
 
 def file_has_front_matter(path: str) -> bool:
@@ -352,11 +360,23 @@ def test_front_matter_is_an_accepted_alternative_to_include() -> None:
     [
         ("---\n---\n# Title\n", True),
         ("---\ntitle: Contributing\n---\n# Title\n", True),
+        ("---  \r\ntitle: Contributing\r\n...\r\n# Title\r\n", True),
+        ("  ---\n---\n# Title\n", False),
+        ("---\ntitle: Contributing\n  ---\n# Title\n", False),
         ("# Title\n\n---\n\nText\n---\n", False),
         ("---\ntitle: never closed\n# Title\n", False),
         ("", False),
     ],
-    ids=["empty-block", "with-title", "rule-later", "unclosed", "empty-file"],
+    ids=[
+        "empty-block",
+        "with-title",
+        "crlf-dots-trailing-space",
+        "indented-opening",
+        "indented-closing",
+        "rule-later",
+        "unclosed",
+        "empty-file",
+    ],
 )
 def test_front_matter_is_recognised_only_at_the_start_of_a_document(
     markdown: str, expected: bool
