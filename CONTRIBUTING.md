@@ -121,6 +121,23 @@ Work is tracked in issues. Each planned pull request has an issue describing the
 The **milestone goes on the issue, not on the pull request**. GitHub counts both issues and pull requests in a milestone, so setting it on both would count every task twice; the pull request is linked to its issue instead. A milestone's page therefore shows exactly how many tasks are done and how many remain, and release notes are assembled from the issues closed in it.
 
 - Issues carry one or more `area:` labels so the changelog can be grouped by subsystem, a type label (`enhancement`, `bug`, `documentation`) and a size label (`size: S`, `size: M`, `size: L`). Pull requests carry the same area and type labels.
+- Each area in the feature request form matches exactly one label, so triage applies it as reported:
+
+  | Form choice | Label |
+  | ----------- | ----- |
+  | OSC Wi-Fi backend | `area: osc` |
+  | USB Camera SDK backend | `area: usb` |
+  | Media SDK processing | `area: media` |
+  | MCP tools and server | `area: mcp-server` |
+  | Fake camera and fixtures | `area: fake-camera` |
+  | Security | `area: security` |
+  | Long-running jobs | `area: jobs` |
+  | Example agent | `area: agent` |
+  | Developer tooling | `area: tooling` |
+  | CI and merge checks | `area: ci` |
+  | Documentation | `area: docs` |
+
+  A new area gets a label and a form choice in the same change.
 - Add `release` to the issue and the pull request that cut a version.
 - If a task fits two milestones, it is doing two things and should be split.
 - Issues are public: describe the behaviour, not file paths, and do not paste content from the encrypted internal documents.

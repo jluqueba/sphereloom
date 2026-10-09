@@ -94,6 +94,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- The feature request form offers one area per `area:` label, including the USB Camera SDK
+  backend, Media SDK processing and documentation, so a reported area maps to exactly one
+  label. The contributing guide lists the mapping.
+- Every page of the public documentation site carries the full trademark notice in its
+  header.
 - The README is a short general summary; architecture, requirements and getting started
   moved to the developer guide, and the capability matrix moved to its own page. Public
   documentation describes the current state and names no milestones.
