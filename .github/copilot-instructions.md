@@ -182,7 +182,7 @@
 ## GitHub and CI conventions
 
 - Create or change GitHub Actions workflows only when a task explicitly calls for it, such as task M0-05 in `docs/internal/features/osc-camera-control/tasks.md`.
-- CI uses a single required status check named `ci-gate`. A second required check, `copilot-review-gate`, passes only once Copilot has reviewed the head commit (ADR-0019).
+- CI reports everything it runs through one status check, `ci-gate`. The repository requires it and a second check, `copilot-review-gate`, which passes only once Copilot has reviewed the head commit (ADR-0019).
 - The gate is fed by change detection using `dorny/paths-filter`.
 - Documentation-only PRs may skip heavy jobs while still reporting `ci-gate` success.
 - Workflow permissions should default to `{}` and be narrowed per job.
@@ -199,7 +199,7 @@
 
 ## Work tracking: issues, milestones and the project board
 
-Issues are the unit of work. Milestones group issues into phases and releases. A private GitHub Project (`jluqueba` project 1, "SphereLoom") holds status and priority. Each piece of information lives in exactly one place, so the milestone page and the board always agree.
+Issues are the unit of work. Milestones group issues into phases and releases. A private GitHub Project (`jluqueba` project 2, "SphereLoom") holds status and priority. Each piece of information lives in exactly one place, so the milestone page and the board always agree.
 
 - **One issue per pull request.** Every planned pull request has an issue, and every pull request closes exactly one issue with a closing keyword (`Closes #N`) in its description. Work that has no issue gets one before it starts, including work discovered during another task.
 - **The milestone goes on the issue, never on the pull request.** GitHub counts issues and pull requests in a milestone, so a milestone on both would count every task twice. The pull request is linked to the issue instead.

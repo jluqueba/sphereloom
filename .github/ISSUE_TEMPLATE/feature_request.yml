@@ -23,14 +23,21 @@ body:
     id: area
     attributes:
       label: Area
-      description: Which part of SphereLoom does this concern?
+      description: >-
+        Which part of SphereLoom does this concern? Each choice matches one `area:` label,
+        so triage can apply it as is.
       options:
-        - OSC Wi-Fi
-        - USB Camera SDK
-        - Media SDK
-        - example agent
-        - tooling & CI
-        - docs
+        - OSC Wi-Fi backend
+        - USB Camera SDK backend
+        - Media SDK processing
+        - MCP tools and server
+        - Fake camera and fixtures
+        - Security
+        - Long-running jobs
+        - Example agent
+        - Developer tooling
+        - CI and merge checks
+        - Documentation
     validations:
       required: true
   - type: dropdown

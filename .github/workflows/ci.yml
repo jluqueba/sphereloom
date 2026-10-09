@@ -4,8 +4,10 @@
 #
 # * Pull requests only. A merge lands the exact tree that was already validated, so running
 #   again on `main` would burn minutes to re-prove the same thing.
-# * One required status check, `ci-gate`. It always reports, even when the heavy jobs are
-#   skipped for a documentation-only change, so a required check never hangs pending.
+# * One status check for everything CI runs, `ci-gate`, which the ruleset requires. It
+#   always reports, even when the heavy jobs are skipped for a documentation-only change,
+#   so a required check never hangs pending. The other required check,
+#   `copilot-review-gate`, comes from its own workflow (ADR-0019).
 # * Permissions start empty and are granted per job.
 # * Checks run with `--no-sync` against an environment installed in an explicit step, so a
 #   check can never silently re-resolve dependencies mid-run.
@@ -129,10 +131,10 @@ jobs:
         uses: DavidAnson/markdownlint-cli2-action@v24
 
   ci-gate:
-    # The single required status check. It depends on every other job and passes only on an
-    # allow-list of results, never a deny-list. Searching for "failure" or "cancelled" fails
-    # open: it passed on an empty or malformed result set, and on any result outside the
-    # pair it named.
+    # The required status check for everything this workflow runs. It depends on every other
+    # job and passes only on an allow-list of results, never a deny-list. Searching for
+    # "failure" or "cancelled" fails open: it passed on an empty or malformed result set,
+    # and on any result outside the pair it named.
     #
     # * Change detection must itself succeed. A skipped heavy job is legitimate only when
     #   the filter ran and decided the area was untouched.

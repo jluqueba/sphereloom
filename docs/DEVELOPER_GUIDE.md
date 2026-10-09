@@ -186,9 +186,13 @@ in this repository is involved.
 Jekyll publishes everything it is not told to exclude, so `tests/unit/test_public_site.py`
 fails when a tracked top-level path, or an entry under `docs/`, is neither published on
 purpose nor excluded. When you add a code or tooling directory, add it to the `exclude` list
-in `_config.yml`. The same test fails on Liquid template delimiters in published Markdown (two
-opening braces, or an opening brace followed by a percent sign), because Jekyll evaluates
-them; describe such syntax in words or link to the file instead.
+in `_config.yml`. Jekyll skips entries whose names start with a dot or an underscore, so a
+new one of those is not excluded but classified instead: add it to the test's list of known
+hidden entries or, if it must be published, to the `include` list in `_config.yml` and the
+test's list of required includes. The same
+test fails on Liquid template delimiters in published Markdown (two opening braces, or an
+opening brace followed by a percent sign), because Jekyll evaluates them; describe such
+syntax in words or link to the file instead.
 
 ## Diagrams
 
