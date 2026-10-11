@@ -237,7 +237,7 @@ Everything else is **minor** and does not block: wording, docstring and comment 
 
 Verify before fixing. Reproduce a claimed defect first; a finding that does not reproduce is answered on its thread with the evidence and resolved, not fixed on faith. When a defect is real, find every occurrence of its class before fixing, and add an automated rule where one is possible.
 
-This rule relaxes what blocks a merge, not what is done before pushing. The local safeguards stay mandatory for every change: the codebase rule tests, the suite on both Windows and Linux, an adversarial review of the diff, and mutation checks for any new test written to catch a regression.
+This rule relaxes what blocks a merge, not what is done before pushing. The local safeguards stay mandatory for every change: the codebase rule tests, the suite on both Windows and Linux, an adversarial review of the diff, and mutation checks, starting from a passing test, for any new test written to catch a regression or to guard a security property or a bound.
 
 ### Read the review body, not only the inline comments
 

@@ -178,7 +178,7 @@ Everything else is **minor** and does not block: wording, docstring and comment 
 
 Reproduce a claimed defect before fixing it. A finding that does not reproduce is answered on its thread with the evidence, and resolved. When a defect is real, find every occurrence of its class before fixing it, and add an automated rule where one is possible.
 
-This rule exists because chasing every finding on a large pull request does not converge. Each fix adds code, each new line is new review surface, and the reviewer revisits unchanged code in every cycle, so "zero findings" keeps moving. It relaxes only what blocks a merge. The checks before pushing stay mandatory for every change: the codebase rule tests, the suite on both Windows and Linux, an adversarial review of the diff, and a mutation check for any test written to catch a regression.
+This rule exists because chasing every finding on a large pull request does not converge. Each fix adds code, each new line is new review surface, and the reviewer revisits unchanged code in every cycle, so "zero findings" keeps moving. It relaxes only what blocks a merge. The checks before pushing stay mandatory for every change: the codebase rule tests, the suite on both Windows and Linux, an adversarial review of the diff, and a mutation check, starting from a passing test, for any test written to catch a regression or to guard a security property or a bound.
 
 #### Findings appear in two places
 
