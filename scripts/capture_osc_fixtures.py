@@ -41,6 +41,10 @@ from typing import Any
 
 import httpx
 
+from sphereloom.domain.bounded import JsonValue
+from sphereloom.domain.errors import InternalError, SphereLoomError
+from sphereloom.domain.payloads import PayloadBuffer
+
 DEFAULT_BASE_URL = "http://192.168.42.1"
 OUTPUT_DIR = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "osc"
 
@@ -64,6 +68,8 @@ CAPTURE_DEADLINE_SECONDS = 60.0
 HEADERS = {
     "Content-Type": "application/json;charset=utf-8",
     "Accept": "application/json",
+    # Bodies are read raw so their size is bounded as received; see `_request_json`.
+    "Accept-Encoding": "identity",
     "X-XSRF-Protected": "1",
 }
 
@@ -225,18 +231,44 @@ OPTION_NAMES = [
 ]
 
 
-def _execute(client: httpx.Client, name: str, parameters: dict[str, Any] | None = None) -> Any:
+def _request_json(
+    client: httpx.Client, method: str, url: str, *, body: dict[str, Any] | None = None
+) -> dict[str, JsonValue]:
+    """Send one request and decode its body strictly, refusing it once it is too large.
+
+    The body is streamed into a `PayloadBuffer` rather than read whole, so a camera sending
+    an oversized response cannot make this script hold it all in memory. It is read raw,
+    without content decoding: a compressed chunk can expand far beyond the limit before the
+    buffer sees it, whereas a compressed body read raw simply fails to decode.
+
+    Every OSC response is a JSON object, so any other shape is refused here, once for every
+    caller. Treating it as a missing field instead would turn a malformed status into a
+    capture that merely looks unfinished.
+    """
+    buffer = PayloadBuffer()
+    with client.stream(method, url, json=body) as response:
+        response.raise_for_status()
+        for chunk in response.iter_raw():
+            buffer.feed(chunk)
+    value = buffer.decode()
+    if not isinstance(value, dict):
+        message = f"The camera answered {url} with JSON that is not an object."
+        raise InternalError(message, details={"unexpected_shape": url})
+    return value
+
+
+def _execute(
+    client: httpx.Client, name: str, parameters: dict[str, Any] | None = None
+) -> dict[str, JsonValue]:
     payload: dict[str, Any] = {"name": name}
     if parameters:
         payload["parameters"] = parameters
-    response = client.post("/osc/commands/execute", json=payload)
-    response.raise_for_status()
-    return response.json()
+    return _request_json(client, "POST", "/osc/commands/execute", body=payload)
 
 
 def _poll_until_done(
     client: httpx.Client, command_id: str, *, deadline_seconds: float, interval: float = 1.0
-) -> Any:
+) -> dict[str, JsonValue]:
     """Poll a command to its terminal state.
 
     The vendor recommends about one poll per second, so the pacing here is deliberate
@@ -245,11 +277,8 @@ def _poll_until_done(
     """
     started = time.monotonic()
     while time.monotonic() - started < deadline_seconds:
-        response = client.post("/osc/commands/status", json={"id": command_id})
-        response.raise_for_status()
-        body = response.json()
-        state = body.get("state")
-        if state in {"done", "error"}:
+        body = _request_json(client, "POST", "/osc/commands/status", body={"id": command_id})
+        if body.get("state") in {"done", "error"}:
             return body
         time.sleep(interval)
 
@@ -266,14 +295,10 @@ def capture(base_url: str, *, take_photo: bool, timeout: float) -> dict[str, Any
 
     with httpx.Client(base_url=base_url, headers=HEADERS, timeout=timeout) as client:
         print("  GET  /osc/info", file=sys.stderr)
-        info = client.get("/osc/info")
-        info.raise_for_status()
-        captured["info"] = info.json()
+        captured["info"] = _request_json(client, "GET", "/osc/info")
 
         print("  POST /osc/state", file=sys.stderr)
-        state = client.post("/osc/state")
-        state.raise_for_status()
-        captured["state"] = state.json()
+        captured["state"] = _request_json(client, "POST", "/osc/state")
 
         print("  POST camera.getOptions", file=sys.stderr)
         captured["get_options"] = _execute(
@@ -311,6 +336,8 @@ def capture(base_url: str, *, take_photo: bool, timeout: float) -> dict[str, Any
                     captured["take_picture_result"] = _poll_until_done(
                         client, str(command_id), deadline_seconds=CAPTURE_DEADLINE_SECONDS
                     )
+                # Only a capture that did not finish is tolerated. A response that cannot be
+                # decoded propagates, so the script fails instead of writing partial fixtures.
                 except (TimeoutError, httpx.HTTPError) as exc:
                     print(f"  capture did not complete: {exc}", file=sys.stderr)
             else:
@@ -398,6 +425,9 @@ def main(argv: list[str] | None = None) -> int:
             "the camera is powered on.",
             file=sys.stderr,
         )
+        return 1
+    except SphereLoomError as exc:
+        print(f"\n{exc.message}", file=sys.stderr)
         return 1
 
     found: set[str] = set()

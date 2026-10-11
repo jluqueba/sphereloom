@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Error code `storage_unavailable` for a camera with no usable storage, such as a missing
+  or unreadable card, distinct from `storage_full` because the remedy differs.
+- Strict, bounded decoding of every camera response: bodies are refused as soon as they
+  exceed 1 MiB while being read, and invalid UTF-8, `NaN` and `Infinity`, overflowing
+  numbers, integers outside the 64-bit range, lone surrogates and nesting deeper than 32
+  levels are refused with a typed `internal` error naming the reason. The fixture capture
+  script uses the same decoder, and a codebase rule fails the build on any other way of
+  decoding JSON in the server or the scripts. Architecture decision record ADR-0017
+  records the decision.
 - Required `copilot-review-gate` status check: a pull request cannot be merged until
   Copilot has reviewed its latest commit. The check reruns on every push and every
   submitted review, fails closed on anything it cannot read, and exempts pull requests
@@ -94,6 +103,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Whether an error is `retryable` is now decided per error rather than per code. A code
+  keeps its default, and the component raising it can only narrow it to `false`, so a
+  capture the camera already accepted is never reported as safe to repeat. Error envelopes
+  are bounded and serialisable whatever their details contain.
 - Every GitHub Action the workflows run is pinned to a full commit SHA, with its release in
   a comment that Dependabot keeps up to date, so a moved or compromised tag cannot change
   what CI runs. A test rejects any action that is not pinned this way.
