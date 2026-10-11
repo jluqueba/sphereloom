@@ -102,7 +102,11 @@ Before writing code, list the invariants the change must hold and the test that 
 - what happens after an ambiguous outcome — a capture the camera accepted is never retryable;
 - what is written to disk, and how it is cleaned up on failure and cancellation.
 
-A design decision that emerges during review lands in its own small documentation pull request, such as a new ADR or a spec amendment, rather than inside the feature pull request. Closing the feature pull request must never lose the decision.
+Every pull request lists them in its description. A change that handles untrusted input, writes to disk, or acts on the camera (capture, settings, deletion) also gets them agreed with a maintainer before coding starts; when in doubt, treat the change as one of these. Other changes go straight to code.
+
+A design decision that emerges during review lands in its own small documentation pull request, such as a spec or plan amendment, rather than inside the feature pull request. Closing the feature pull request must never lose the decision. A new ADR is reserved for a decision that changes an accepted ADR or sets a rule that crosses features.
+
+Deliver a working end-to-end path before broadening the foundations under it. The board's `Priority` field sets that order where it differs from issue numbers.
 
 ### Run the suite on Linux before pushing
 
@@ -112,7 +116,7 @@ Run the suite under WSL Ubuntu, or any Linux with the project's Python, before p
 
 When a behaviour genuinely differs between platforms, do not encode one platform's answer in an assertion. Inject the failure instead of provoking it — for example, patch the filesystem call to raise — so the test asserts the guarantee rather than the quirk on every platform. Gate a test with `@pytest.mark.skipif(sys.platform == ...)` only when injection is impossible, as with creating a real symlink on Windows.
 
-For every test written to catch a regression, reintroduce the defect locally and confirm the test fails before pushing. A test that cannot fail protects nothing.
+For every test written to catch a regression, or to guard a security property or a bound, reintroduce the defect locally and confirm the test fails before pushing. Run the test on the unmodified code first: a test that is already failing makes every reintroduced defect look caught. A test that cannot fail protects nothing.
 
 ### Issues, milestones and labels
 

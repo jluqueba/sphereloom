@@ -103,6 +103,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Contribution process: an up-front review of a change's invariants is required only for
+  changes that handle untrusted input, write to disk or act on the camera; a new
+  architecture decision record is reserved for decisions that change an accepted one or
+  cross features; and a mutation check must start from a passing test. Architecture
+  decision record ADR-0020 also orders the remaining work to deliver an end-to-end path
+  first.
 - Whether an error is `retryable` is now decided per error rather than per code. A code
   keeps its default, and the component raising it can only narrow it to `false`, so a
   capture the camera already accepted is never reported as safe to repeat. Error envelopes
