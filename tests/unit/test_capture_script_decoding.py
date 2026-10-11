@@ -11,7 +11,7 @@ import importlib.util
 import sys
 from collections.abc import Iterator
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import httpx
 import pytest
@@ -75,32 +75,50 @@ def test_a_compressed_response_is_not_decompressed_into_the_buffer() -> None:
     assert caught.value.details == {"decode_error": "not_utf8"}
 
 
-def test_an_undecodable_capture_result_fails_the_capture(monkeypatch: pytest.MonkeyPatch) -> None:
+_ACCEPTED = b'{"state": "inProgress", "id": "1"}'
+
+
+@pytest.mark.parametrize(
+    ("execute_body", "status_body", "expected"),
+    [
+        (_ACCEPTED, b'{"state": "done", "x": NaN}', {"decode_error": "non_finite_number"}),
+        (_ACCEPTED, b"[]", {"unexpected_shape": "/osc/commands/status"}),
+        (_ACCEPTED, b"null", {"unexpected_shape": "/osc/commands/status"}),
+        (b'"accepted"', b"{}", {"unexpected_shape": "/osc/commands/execute"}),
+    ],
+    ids=["undecodable-status", "array-status", "null-status", "string-acknowledgement"],
+)
+def test_an_unusable_response_fails_the_capture(
+    monkeypatch: pytest.MonkeyPatch,
+    execute_body: bytes,
+    status_body: bytes,
+    expected: dict[str, str],
+) -> None:
     """Only a capture that did not finish is tolerated; an unusable response is not.
 
-    Tolerating it would write partial fixtures and exit successfully.
+    Tolerating it, or reading a malformed status as one that is merely unfinished, would
+    write partial fixtures and exit successfully.
     """
 
     def camera(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/osc/commands/status":
-            return httpx.Response(200, content=iter([b'{"state": "done", "x": NaN}']))
-        if request.url.path == "/osc/commands/execute":
-            body = b'{"state": "inProgress", "id": "1"}'
-            return httpx.Response(200, content=iter([body]))
-        return httpx.Response(200, content=iter([b"{}"]))
+        bodies = {"/osc/commands/status": status_body, "/osc/commands/execute": execute_body}
+        return httpx.Response(200, content=iter([bodies.get(request.url.path, b"{}")]))
 
     real_client = httpx.Client
 
     def client_factory(**kwargs: object) -> httpx.Client:
         return real_client(transport=httpx.MockTransport(camera), **kwargs)  # type: ignore[arg-type]  # forwarding the script's own keyword arguments
 
+    ticks = iter(range(1_000))
     monkeypatch.setattr(script.httpx, "Client", client_factory)
-    monkeypatch.setattr(script, "CAPTURE_DEADLINE_SECONDS", 5.0)
+    monkeypatch.setattr(
+        script, "time", SimpleNamespace(monotonic=lambda: float(next(ticks)), sleep=lambda _: None)
+    )
 
     with pytest.raises(InternalError) as caught:
         script.capture("http://camera.invalid", take_photo=True, timeout=1.0)
 
-    assert caught.value.details == {"decode_error": "non_finite_number"}
+    assert caught.value.details == expected
 
 
 def test_an_oversized_response_is_refused_without_reading_it_all() -> None:

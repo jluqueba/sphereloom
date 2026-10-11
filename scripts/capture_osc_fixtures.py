@@ -42,7 +42,7 @@ from typing import Any
 import httpx
 
 from sphereloom.domain.bounded import JsonValue
-from sphereloom.domain.errors import SphereLoomError
+from sphereloom.domain.errors import InternalError, SphereLoomError
 from sphereloom.domain.payloads import PayloadBuffer
 
 DEFAULT_BASE_URL = "http://192.168.42.1"
@@ -233,25 +233,33 @@ OPTION_NAMES = [
 
 def _request_json(
     client: httpx.Client, method: str, url: str, *, body: dict[str, Any] | None = None
-) -> JsonValue:
+) -> dict[str, JsonValue]:
     """Send one request and decode its body strictly, refusing it once it is too large.
 
     The body is streamed into a `PayloadBuffer` rather than read whole, so a camera sending
     an oversized response cannot make this script hold it all in memory. It is read raw,
     without content decoding: a compressed chunk can expand far beyond the limit before the
     buffer sees it, whereas a compressed body read raw simply fails to decode.
+
+    Every OSC response is a JSON object, so any other shape is refused here, once for every
+    caller. Treating it as a missing field instead would turn a malformed status into a
+    capture that merely looks unfinished.
     """
     buffer = PayloadBuffer()
     with client.stream(method, url, json=body) as response:
         response.raise_for_status()
         for chunk in response.iter_raw():
             buffer.feed(chunk)
-    return buffer.decode()
+    value = buffer.decode()
+    if not isinstance(value, dict):
+        message = f"The camera answered {url} with JSON that is not an object."
+        raise InternalError(message, details={"unexpected_shape": url})
+    return value
 
 
 def _execute(
     client: httpx.Client, name: str, parameters: dict[str, Any] | None = None
-) -> JsonValue:
+) -> dict[str, JsonValue]:
     payload: dict[str, Any] = {"name": name}
     if parameters:
         payload["parameters"] = parameters
@@ -260,7 +268,7 @@ def _execute(
 
 def _poll_until_done(
     client: httpx.Client, command_id: str, *, deadline_seconds: float, interval: float = 1.0
-) -> JsonValue:
+) -> dict[str, JsonValue]:
     """Poll a command to its terminal state.
 
     The vendor recommends about one poll per second, so the pacing here is deliberate
@@ -270,8 +278,7 @@ def _poll_until_done(
     started = time.monotonic()
     while time.monotonic() - started < deadline_seconds:
         body = _request_json(client, "POST", "/osc/commands/status", body={"id": command_id})
-        state = body.get("state") if isinstance(body, dict) else None
-        if state in {"done", "error"}:
+        if body.get("state") in {"done", "error"}:
             return body
         time.sleep(interval)
 
@@ -322,7 +329,7 @@ def capture(base_url: str, *, take_photo: bool, timeout: float) -> dict[str, Any
             # The acknowledgement only says the capture started. The terminal response is
             # the one carrying fileUrl and the file-group fields, and that is precisely the
             # shape the fake camera has to be checked against, so record both.
-            command_id = acknowledgement.get("id") if isinstance(acknowledgement, dict) else None
+            command_id = acknowledgement.get("id")
             if command_id:
                 print(f"  POST /osc/commands/status (polling {command_id})", file=sys.stderr)
                 try:
