@@ -49,6 +49,7 @@ control, and a malformed or hostile payload must never become a crash, an unboun
 a request to somewhere we did not intend.
 
 - Validate any URL taken from a device response against the expected origin before following it.
+- Decode every device response through `sphereloom.domain.payloads`: feed a streaming read into a `PayloadBuffer`, or call `decode_device_json`. A codebase rule rejects any other way of decoding JSON in `src/` and `scripts/`.
 - Bound anything copied from a response into a message, a log or an error envelope through one shared helper. Do not write a second bounding implementation: when the same logic exists twice, only one copy stays correct.
 - Treat an unrecognised state, code or shape as a failure, never as success. Accepting an unknown state as "done" turns a malformed reply into an empty successful result, which is the most misleading outcome available.
 - Reject non-2xx HTTP responses explicitly when redirects are not followed; a 3xx body is not content.

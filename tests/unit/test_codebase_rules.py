@@ -6,6 +6,7 @@ case that must fail, so a rule that silently stopped working would be noticed.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -154,3 +155,129 @@ def test_a_reusable_workflow_job_is_checked() -> None:
 )
 def test_a_pinned_or_local_action_is_accepted(step: str) -> None:
     assert unpinned_actions(workflow(step)) == []
+
+
+# Rule: JSON from a device is decoded only by the strict, bounded decoder (ADR-0017).
+
+#: Where the rule applies: everything that can talk to a camera.
+DECODING_ROOTS = (REPOSITORY_ROOT / "src" / "sphereloom", REPOSITORY_ROOT / "scripts")
+
+#: Paths allowed to decode JSON themselves, each with the reason. A directory ends in `/`.
+DECODING_EXEMPTIONS = {
+    "src/sphereloom/domain/payloads.py": "it is the strict decoder",
+    "src/sphereloom/adapters/fake/": (
+        "the fake camera parses requests from SphereLoom's own client, not device responses"
+    ),
+    "scripts/copilot_review_gate.py": (
+        "it runs with the system Python before the package is installed, and reads the "
+        "GitHub API, not a device"
+    ),
+}
+
+_JSON_DECODERS = frozenset({"load", "loads", "JSONDecoder"})
+
+
+def lenient_json_decoding(source: str) -> list[str]:
+    """Return every place `source` decodes JSON without the strict decoder.
+
+    That is a reference to `json.load`, `json.loads` or `json.JSONDecoder`, under any alias,
+    and any call to a `.json(...)` method, which is how HTTP and web libraries decode a body.
+    """
+    tree = ast.parse(source)
+    modules = {"json"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(
+                alias.asname for alias in node.names if alias.name == "json" and alias.asname
+            )
+
+    problems: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "json":
+            problems.extend(
+                f"line {node.lineno}: from json import {alias.name}"
+                for alias in node.names
+                if alias.name in _JSON_DECODERS
+            )
+        elif (
+            isinstance(node, ast.Attribute)
+            and node.attr in _JSON_DECODERS
+            and isinstance(node.value, ast.Name)
+            and node.value.id in modules
+        ):
+            problems.append(f"line {node.lineno}: {node.value.id}.{node.attr}")
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "json"
+        ):
+            problems.append(f"line {node.lineno}: .json()")
+    return problems
+
+
+def _is_exempt(relative: str) -> bool:
+    return any(
+        relative.startswith(path) if path.endswith("/") else relative == path
+        for path in DECODING_EXEMPTIONS
+    )
+
+
+def decoding_sources() -> list[Path]:
+    files = sorted(path for root in DECODING_ROOTS for path in root.rglob("*.py"))
+    assert files, "no source found; the decoding rule would pass on nothing"
+    return [path for path in files if not _is_exempt(path.relative_to(REPOSITORY_ROOT).as_posix())]
+
+
+@pytest.mark.parametrize(
+    "path", decoding_sources(), ids=lambda path: path.relative_to(REPOSITORY_ROOT).as_posix()
+)
+def test_json_is_decoded_only_by_the_strict_decoder(path: Path) -> None:
+    assert lenient_json_decoding(path.read_text("utf-8")) == []
+
+
+@pytest.mark.parametrize("path", sorted(DECODING_EXEMPTIONS))
+def test_every_decoding_exemption_names_an_existing_path(path: str) -> None:
+    assert (REPOSITORY_ROOT / path).exists()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import json\njson.loads(body)\n",
+        "import json\njson.load(handle)\n",
+        "import json\njson.JSONDecoder().decode(body)\n",
+        "import json as j\nj.loads(body)\n",
+        "from json import loads\n",
+        "from json import loads as parse\n",
+        "response.json()\n",
+        "await request.json()\n",
+        "response.json(object_hook=dict)\n",
+    ],
+    ids=[
+        "loads",
+        "load",
+        "decoder",
+        "aliased-module",
+        "from-import",
+        "aliased-from-import",
+        "response-json",
+        "awaited-json",
+        "json-with-arguments",
+    ],
+)
+def test_lenient_json_decoding_is_reported(source: str) -> None:
+    assert len(lenient_json_decoding(source)) == 1
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import json\njson.dumps(value)\n",
+        "from json import dumps\n",
+        "decode_device_json(body)\n",
+        "settings.json_path\n",
+    ],
+    ids=["dumps", "from-import-dumps", "strict-decoder", "attribute-named-like-json"],
+)
+def test_strict_decoding_and_encoding_are_accepted(source: str) -> None:
+    assert lenient_json_decoding(source) == []

@@ -4,15 +4,19 @@ Every failure a tool can report has exactly one code and one exception class, an
 exactly one rendering path to the wire envelope. Tools never raise bare exceptions, and
 never invent codes, so an agent can branch on `code` reliably.
 
-See `docs/internal/features/osc-camera-control/plan.md` section 7 and ADR-0003.
+See `docs/internal/features/osc-camera-control/plan.md` section 7, ADR-0003 and ADR-0017.
 """
 
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import ClassVar
+from typing import ClassVar, Literal
 
-type JsonValue = str | int | float | bool | list[JsonValue] | dict[str, JsonValue] | None
+from sphereloom.domain.bounded import JsonValue, bounded_json, bounded_text
+
+#: Longest message or envelope field rendered. Messages are written by SphereLoom, but may
+#: quote a value that came from a device.
+MAX_MESSAGE_LENGTH = 2000
 
 
 class ErrorCode(StrEnum):
@@ -30,6 +34,7 @@ class ErrorCode(StrEnum):
     TIMEOUT = "timeout"
     RATE_LIMITED = "rate_limited"
     STORAGE_FULL = "storage_full"
+    STORAGE_UNAVAILABLE = "storage_unavailable"
     JOB_FAILED = "job_failed"
     INTERNAL = "internal"
 
@@ -39,10 +44,18 @@ class SphereLoomError(Exception):
 
     Messages are written for a human and a model at once: they state what failed, why, and
     what to do next. They must never contain tokens, network credentials or absolute paths.
+
+    `retryable` belongs to the instance, not the class. The same code can be safe or unsafe
+    to repeat depending on when it happened: a timeout before a capture command reached the
+    camera is worth retrying, while one after the camera accepted it is not, because the
+    capture may be running and a retry would take a second picture. A raiser can therefore
+    only narrow the class default, by passing `retryable=False`; nothing can make a code
+    retryable that is not retryable by default.
     """
 
     code: ClassVar[ErrorCode] = ErrorCode.INTERNAL
-    retryable: ClassVar[bool] = False
+    #: Whether this code is safe to repeat when the raiser knows nothing more specific.
+    default_retryable: ClassVar[bool] = False
 
     def __init__(
         self,
@@ -54,6 +67,7 @@ class SphereLoomError(Exception):
         docs_url: str | None = None,
         available_in: str | None = None,
         details: dict[str, JsonValue] | None = None,
+        retryable: Literal[False] | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -62,13 +76,21 @@ class SphereLoomError(Exception):
         self.reason = reason
         self.docs_url = docs_url
         self.available_in = available_in
-        self.details: dict[str, JsonValue] = details or {}
+        self.details: dict[str, JsonValue] = {} if details is None else details
+        # Compared with `is not False` rather than read as a flag, so an untyped caller
+        # passing `True` still cannot widen the class default.
+        self.retryable: bool = self.default_retryable and retryable is not False
 
     def to_envelope(self) -> dict[str, JsonValue]:
-        """Render the error as the wire envelope shared by every tool."""
+        """Render the error as the wire envelope shared by every tool.
+
+        The result is bounded and JSON-serialisable by construction, whatever was passed to
+        the constructor: an envelope that cannot be serialised would turn a reported failure
+        into an unreported crash.
+        """
         payload: dict[str, JsonValue] = {
             "code": self.code.value,
-            "message": self.message,
+            "message": _field(self.message),
             "retryable": self.retryable,
         }
         optional: dict[str, str | None] = {
@@ -78,10 +100,14 @@ class SphereLoomError(Exception):
             "docs_url": self.docs_url,
             "available_in": self.available_in,
         }
-        payload.update({key: value for key, value in optional.items() if value is not None})
+        payload.update({key: _field(value) for key, value in optional.items() if value is not None})
         if self.details:
-            payload["details"] = self.details
+            payload["details"] = bounded_json(self.details)
         return {"error": payload}
+
+
+def _field(value: object) -> str:
+    return bounded_text(value, MAX_MESSAGE_LENGTH) if isinstance(value, str) else ""
 
 
 class UnsupportedCapabilityError(SphereLoomError):
@@ -98,14 +124,14 @@ class NotConnectedError(SphereLoomError):
     """The camera is unreachable, or the endpoint is not a spherical camera."""
 
     code = ErrorCode.NOT_CONNECTED
-    retryable = True
+    default_retryable = True
 
 
 class CameraBusyError(SphereLoomError):
     """The camera is already running a capture or another command."""
 
     code = ErrorCode.CAMERA_BUSY
-    retryable = True
+    default_retryable = True
 
 
 class InvalidArgumentError(SphereLoomError):
@@ -148,20 +174,30 @@ class OperationTimeoutError(SphereLoomError):
     """A deadline was exceeded before the operation reported completion."""
 
     code = ErrorCode.TIMEOUT
-    retryable = True
+    default_retryable = True
 
 
 class RateLimitedError(SphereLoomError):
     """An internal rate limit rejected the call."""
 
     code = ErrorCode.RATE_LIMITED
-    retryable = True
+    default_retryable = True
 
 
 class StorageFullError(SphereLoomError):
     """The camera storage or the host workspace has no room left."""
 
     code = ErrorCode.STORAGE_FULL
+
+
+class StorageUnavailableError(SphereLoomError):
+    """The camera has no usable storage: no card is inserted, or the card cannot be read.
+
+    Distinct from `StorageFullError` because the remedy differs: telling someone with no
+    card to free some space sends them looking for a problem they do not have.
+    """
+
+    code = ErrorCode.STORAGE_UNAVAILABLE
 
 
 class JobFailedError(SphereLoomError):
@@ -192,6 +228,7 @@ ERROR_CLASSES: dict[ErrorCode, type[SphereLoomError]] = {
     ErrorCode.TIMEOUT: OperationTimeoutError,
     ErrorCode.RATE_LIMITED: RateLimitedError,
     ErrorCode.STORAGE_FULL: StorageFullError,
+    ErrorCode.STORAGE_UNAVAILABLE: StorageUnavailableError,
     ErrorCode.JOB_FAILED: JobFailedError,
     ErrorCode.INTERNAL: InternalError,
 }
