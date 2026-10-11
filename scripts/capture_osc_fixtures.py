@@ -329,7 +329,9 @@ def capture(base_url: str, *, take_photo: bool, timeout: float) -> dict[str, Any
                     captured["take_picture_result"] = _poll_until_done(
                         client, str(command_id), deadline_seconds=CAPTURE_DEADLINE_SECONDS
                     )
-                except (TimeoutError, httpx.HTTPError, SphereLoomError) as exc:
+                # Only a capture that did not finish is tolerated. A response that cannot be
+                # decoded propagates, so the script fails instead of writing partial fixtures.
+                except (TimeoutError, httpx.HTTPError) as exc:
                     print(f"  capture did not complete: {exc}", file=sys.stderr)
             else:
                 print(

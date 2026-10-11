@@ -110,14 +110,25 @@ def test_each_code_has_its_documented_default_retryability(code: ErrorCode) -> N
     assert _envelope(error)["retryable"] is (code in _RETRYABLE_BY_DEFAULT)
 
 
-def test_an_accepted_capture_that_later_times_out_is_not_retryable() -> None:
-    """A timeout is retryable by default, but not once the camera accepted the capture.
+def test_a_raiser_can_narrow_a_retryable_code() -> None:
+    """A timeout is retryable by default, but not when the raiser says otherwise.
 
-    Retrying then would take a second picture, so the raiser narrows it per instance.
+    This is the mechanism that lets a capture the camera already accepted be reported as
+    not retryable. Applying it after acceptance belongs to the command runner, which proves
+    that from the tool surface.
     """
     error = OperationTimeoutError("The capture did not finish in time.", retryable=False)
 
     assert error.retryable is False
+    assert _envelope(error)["retryable"] is False
+
+
+def test_retryability_cannot_be_widened_after_construction() -> None:
+    error = InternalError("message")
+
+    with pytest.raises(AttributeError):
+        error.retryable = True  # type: ignore[misc]  # assigning a read-only property is the point
+
     assert _envelope(error)["retryable"] is False
 
 

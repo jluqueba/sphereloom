@@ -79,7 +79,12 @@ class SphereLoomError(Exception):
         self.details: dict[str, JsonValue] = {} if details is None else details
         # Compared with `is not False` rather than read as a flag, so an untyped caller
         # passing `True` still cannot widen the class default.
-        self.retryable: bool = self.default_retryable and retryable is not False
+        self._retryable = self.default_retryable and retryable is not False
+
+    @property
+    def retryable(self) -> bool:
+        """Whether repeating the operation is safe; read-only, so it cannot be widened later."""
+        return self._retryable
 
     def to_envelope(self) -> dict[str, JsonValue]:
         """Render the error as the wire envelope shared by every tool.

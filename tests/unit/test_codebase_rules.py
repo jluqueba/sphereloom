@@ -174,14 +174,19 @@ DECODING_EXEMPTIONS = {
     ),
 }
 
-_JSON_DECODERS = frozenset({"load", "loads", "JSONDecoder"})
+#: Names that decode JSON when imported from the `json` package or reached through it.
+_JSON_DECODERS = frozenset({"load", "loads", "JSONDecoder", "decoder", "scanner"})
 
 
 def lenient_json_decoding(source: str) -> list[str]:
     """Return every place `source` decodes JSON without the strict decoder.
 
-    That is a reference to `json.load`, `json.loads` or `json.JSONDecoder`, under any alias,
-    and any call to a `.json(...)` method, which is how HTTP and web libraries decode a body.
+    That is `JSONDecoder` reached as an attribute (`json.JSONDecoder`,
+    `json.decoder.JSONDecoder`, or through a module alias); `load`, `loads`, `decoder` or
+    `scanner` on the `json` module under any alias; an import from `json.decoder` or
+    `json.scanner`, a star import from `json`, or an import of a decoding name from it; and
+    any call to a `.json(...)` method, which is how HTTP and web libraries decode a body.
+    It errs towards reporting.
     """
     tree = ast.parse(source)
     modules = {"json"}
@@ -193,19 +198,24 @@ def lenient_json_decoding(source: str) -> list[str]:
 
     problems: list[str] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "json":
-            problems.extend(
-                f"line {node.lineno}: from json import {alias.name}"
-                for alias in node.names
-                if alias.name in _JSON_DECODERS
+        if isinstance(node, ast.ImportFrom) and node.module is not None:
+            if node.module.startswith("json."):
+                problems.append(f"line {node.lineno}: from {node.module} import")
+            elif node.module == "json":
+                problems.extend(
+                    f"line {node.lineno}: from json import {alias.name}"
+                    for alias in node.names
+                    if alias.name in _JSON_DECODERS or alias.name == "*"
+                )
+        elif isinstance(node, ast.Attribute) and (
+            node.attr == "JSONDecoder"
+            or (
+                node.attr in _JSON_DECODERS
+                and isinstance(node.value, ast.Name)
+                and node.value.id in modules
             )
-        elif (
-            isinstance(node, ast.Attribute)
-            and node.attr in _JSON_DECODERS
-            and isinstance(node.value, ast.Name)
-            and node.value.id in modules
         ):
-            problems.append(f"line {node.lineno}: {node.value.id}.{node.attr}")
+            problems.append(f"line {node.lineno}: .{node.attr}")
         elif (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
@@ -252,6 +262,12 @@ def test_every_decoding_exemption_names_an_existing_path(path: str) -> None:
         "response.json()\n",
         "await request.json()\n",
         "response.json(object_hook=dict)\n",
+        "import json\njson.decoder.JSONDecoder().decode(body)\n",
+        "from json import decoder\ndecoder.JSONDecoder().decode(body)\n",
+        "import json.decoder as d\nd.JSONDecoder().decode(body)\n",
+        "from json.decoder import JSONDecoder\n",
+        "from json import JSONDecoder\nJSONDecoder().decode(body)\n",
+        "from json import *\nloads(body)\n",
     ],
     ids=[
         "loads",
@@ -263,10 +279,16 @@ def test_every_decoding_exemption_names_an_existing_path(path: str) -> None:
         "response-json",
         "awaited-json",
         "json-with-arguments",
+        "nested-module",
+        "imported-submodule",
+        "aliased-submodule",
+        "from-submodule",
+        "imported-decoder-class",
+        "star-import",
     ],
 )
 def test_lenient_json_decoding_is_reported(source: str) -> None:
-    assert len(lenient_json_decoding(source)) == 1
+    assert lenient_json_decoding(source) != []
 
 
 @pytest.mark.parametrize(

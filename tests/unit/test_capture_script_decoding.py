@@ -75,6 +75,34 @@ def test_a_compressed_response_is_not_decompressed_into_the_buffer() -> None:
     assert caught.value.details == {"decode_error": "not_utf8"}
 
 
+def test_an_undecodable_capture_result_fails_the_capture(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only a capture that did not finish is tolerated; an unusable response is not.
+
+    Tolerating it would write partial fixtures and exit successfully.
+    """
+
+    def camera(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/osc/commands/status":
+            return httpx.Response(200, content=iter([b'{"state": "done", "x": NaN}']))
+        if request.url.path == "/osc/commands/execute":
+            body = b'{"state": "inProgress", "id": "1"}'
+            return httpx.Response(200, content=iter([body]))
+        return httpx.Response(200, content=iter([b"{}"]))
+
+    real_client = httpx.Client
+
+    def client_factory(**kwargs: object) -> httpx.Client:
+        return real_client(transport=httpx.MockTransport(camera), **kwargs)  # type: ignore[arg-type]  # forwarding the script's own keyword arguments
+
+    monkeypatch.setattr(script.httpx, "Client", client_factory)
+    monkeypatch.setattr(script, "CAPTURE_DEADLINE_SECONDS", 5.0)
+
+    with pytest.raises(InternalError) as caught:
+        script.capture("http://camera.invalid", take_photo=True, timeout=1.0)
+
+    assert caught.value.details == {"decode_error": "non_finite_number"}
+
+
 def test_an_oversized_response_is_refused_without_reading_it_all() -> None:
     pulled = 0
     available = 4 * MAX_PAYLOAD_BYTES // _CHUNK
