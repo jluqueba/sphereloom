@@ -166,7 +166,7 @@
 - Never assert a platform's own behaviour. CI runs Ubuntu and Windows, and a filename a tab makes illegal on one is legal on the other. Inject the failure instead of provoking it, so the test asserts the guarantee rather than the quirk; gate with `skipif` only when injection is impossible.
 - Run the suite on Linux as well as Windows before pushing; CI runs both.
 - Do not prove that work is bounded with a stopwatch. On a shared CI runner no threshold reliably separates the fixed cost from the regressed one, so the test either flakes or passes the regression. Observe the work instead, by counting what was read or done through an injected seam.
-- For every test written to catch a regression, reintroduce the defect and confirm the test fails (a mutation check) before pushing.
+- For every test written to catch a regression, or to guard a security property or a bound, reintroduce the defect and confirm the test fails (a mutation check) before pushing. Confirm first that the test passes on the unmodified code; otherwise every mutation looks caught.
 
 ## Documentation
 
@@ -195,8 +195,10 @@
 
 - Keep each pull request to one topic and at most about 400 lines of production code, plus its tests. Split before opening, not during review.
 - A pull request must not change logging, the transport layer and the filesystem layer at the same time.
-- Before writing code, list the invariants the change must hold and the test that proves each one: bounds on memory, time and size against untrusted input; the mapping from each status or error to a taxonomy code and whether it is retryable; what happens after an ambiguous outcome (an accepted capture is never retryable); and what is written to disk and how it is cleaned up.
-- A design decision that emerges during review lands in its own small documentation pull request (an ADR, a spec or plan amendment), not inside the feature pull request. Closing the feature pull request must never lose the decision.
+- Before writing code, list the invariants the change must hold and the test that proves each one: bounds on memory, time and size against untrusted input; the mapping from each status or error to a taxonomy code and whether it is retryable; what happens after an ambiguous outcome (an accepted capture is never retryable); and what is written to disk and how it is cleaned up. Put them in the pull request description. Get them approved by the maintainer before coding only when the change handles untrusted input, writes to disk, or acts on the camera (capture, settings, deletion); when in doubt, ask (ADR-0020).
+- A design decision that emerges during review lands in its own small documentation pull request (a spec or plan amendment), not inside the feature pull request. Closing the feature pull request must never lose the decision. Write a new ADR only when the decision changes an accepted ADR or sets a rule that crosses features.
+- Batch questions to the maintainer into one design checkpoint before coding (when required) and one merge checkpoint, instead of asking them one at a time.
+- Deliver a working end-to-end path before broadening the foundations under it (ADR-0020).
 
 ## Work tracking: issues, milestones and the project board
 
@@ -235,7 +237,7 @@ Everything else is **minor** and does not block: wording, docstring and comment 
 
 Verify before fixing. Reproduce a claimed defect first; a finding that does not reproduce is answered on its thread with the evidence and resolved, not fixed on faith. When a defect is real, find every occurrence of its class before fixing, and add an automated rule where one is possible.
 
-This rule relaxes what blocks a merge, not what is done before pushing. The local safeguards stay mandatory for every change: the codebase rule tests, the suite on both Windows and Linux, an adversarial review of the diff, and mutation checks for any new test written to catch a regression.
+This rule relaxes what blocks a merge, not what is done before pushing. The local safeguards stay mandatory for every change: the codebase rule tests, the suite on both Windows and Linux, an adversarial review of the diff, and mutation checks, starting from a passing test, for any new test written to catch a regression or to guard a security property or a bound.
 
 ### Read the review body, not only the inline comments
 
