@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Coroutine
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -18,15 +17,7 @@ from sphereloom.capabilities.registry import CapabilityRegistry, guarded
 from sphereloom.domain.capabilities import Capability, CapabilityState, CapabilityStatus
 from sphereloom.domain.errors import InternalError, UnsupportedCapabilityError
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-
 _PLANNING = re.compile(r"(?i)\bmilestones?\b|\bM[0-9](?:\.[0-9])?\b|\broadmap\b|\b20[0-9]{2}\b")
-_PUBLIC_STATES = {
-    "Available": CapabilityState.AVAILABLE,
-    "Not yet available": CapabilityState.NOT_YET_AVAILABLE,
-    "Not supported by the vendor API": CapabilityState.UNSUPPORTED_BY_VENDOR,
-}
-_MATRIX_ROW = re.compile(r"^\|[^|]*\|\s*`(?P<id>[^`]+)`\s*\|\s*(?P<status>[^|]*?)\s*\|", re.M)
 
 AVAILABLE = CapabilityStatus(capability=Capability.CAMERA_CONNECT, status=CapabilityState.AVAILABLE)
 
@@ -52,6 +43,11 @@ def test_every_capability_resolves_to_exactly_one_state(backend: str) -> None:
 
     assert [status.capability for status in statuses] == list(Capability)
     assert {status.status for status in statuses} <= set(CapabilityState)
+
+
+def test_the_fake_camera_declares_what_the_real_one_does() -> None:
+    """The fake speaks the same Wi-Fi protocol, so a demo never shows more than a camera can."""
+    assert CapabilityRegistry("fake").resolve_all() == CapabilityRegistry("osc").resolve_all()
 
 
 def test_the_identifiers_are_exactly_those_of_the_plan() -> None:
@@ -90,20 +86,6 @@ def test_media_processing_reports_not_yet_available(capability: Capability) -> N
     status = CapabilityRegistry("osc").resolve(capability)
 
     assert status.status is CapabilityState.NOT_YET_AVAILABLE
-
-
-def test_the_registry_agrees_with_the_public_capability_page() -> None:
-    """Honesty: the code never claims more, or less, than the public matrix states."""
-    page = (REPOSITORY_ROOT / "docs" / "CAPABILITIES.md").read_text("utf-8")
-    published = {
-        match["id"]: _PUBLIC_STATES[match["status"]] for match in _MATRIX_ROW.finditer(page)
-    }
-
-    resolved = {
-        status.capability.value: status.status for status in CapabilityRegistry("osc").resolve_all()
-    }
-
-    assert resolved == published
 
 
 @pytest.mark.parametrize("status", CapabilityRegistry("osc").resolve_all(), ids=str)

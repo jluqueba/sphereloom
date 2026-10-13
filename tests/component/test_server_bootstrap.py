@@ -33,7 +33,7 @@ async def test_the_server_exposes_its_tools(settings: Settings) -> None:
 
     tools = await server.list_tools()
 
-    assert [tool.name for tool in tools] == ["server_health"]
+    assert [tool.name for tool in tools] == ["server_health", "capabilities_list"]
 
 
 async def test_every_tool_describes_itself_for_a_model(settings: Settings) -> None:

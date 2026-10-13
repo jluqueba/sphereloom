@@ -1,7 +1,8 @@
 """The media port.
 
-Declared in Milestone 1 with no implementation. Every capability it describes resolves to a
-structured `unsupported` result that names the milestone which will deliver it.
+Declared before any implementation exists. Every capability it describes resolves to a
+structured `unsupported` result whose `status` is `not_yet_available` and which names no
+milestone (ADR-0016).
 
 This port exists now, rather than later, for a reason recorded in ADR-0003: a tool that is
 absent tells an agent nothing, while a tool that explains it needs the desktop Media SDK

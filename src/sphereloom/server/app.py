@@ -17,12 +17,14 @@ from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel, ConfigDict
 
 from sphereloom import __version__
+from sphereloom.capabilities.registry import CapabilityRegistry
 from sphereloom.config import Settings, load_settings
 from sphereloom.domain.clock import SystemClock
 from sphereloom.domain.ids import SecureIdFactory
 from sphereloom.logging import LogEvent, log_event
 from sphereloom.security.workspace import Workspace
 from sphereloom.server.context import AppContext
+from sphereloom.tools.capabilities import register_capabilities_tool
 
 SERVER_INSTRUCTIONS = """\
 SphereLoom controls 360 cameras and processes 360 media on this machine.
@@ -83,6 +85,7 @@ def build_server(settings: Settings | None = None) -> MCPServer[AppContext]:
     )
 
     _register_health_tool(server, resolved)
+    register_capabilities_tool(server, CapabilityRegistry(resolved.camera_backend.value))
     return server
 
 
