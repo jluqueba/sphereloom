@@ -15,11 +15,9 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 
 from sphereloom.config import Settings, Transport
-from sphereloom.logging import get_logger
+from sphereloom.logging import LogEvent, log_event
 from sphereloom.security.http_auth import BearerTokenMiddleware
 from sphereloom.server.context import AppContext
-
-logger = get_logger("transport")
 
 HTTP_PATH = "/mcp"
 
@@ -27,7 +25,7 @@ HTTP_PATH = "/mcp"
 def run(server: MCPServer[AppContext], settings: Settings) -> None:
     """Serve the MCP server over the configured transport. Blocks until shutdown."""
     if settings.transport is Transport.STDIO:
-        logger.info("serving over stdio")
+        log_event(LogEvent.SERVING_STDIO)
         server.run("stdio")
         return
 
@@ -43,11 +41,7 @@ def _run_http(server: MCPServer[AppContext], settings: Settings) -> None:
         raise ValueError(message)
 
     if not settings.is_loopback_host:
-        logger.warning(
-            "HTTP transport is bound beyond loopback; camera control is reachable from "
-            "your network and is protected only by the bearer token",
-            extra={"context": {"port": settings.http_port}},
-        )
+        log_event(LogEvent.HTTP_BEYOND_LOOPBACK, port=settings.http_port)
 
     security = TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
@@ -61,10 +55,7 @@ def _run_http(server: MCPServer[AppContext], settings: Settings) -> None:
     )
     guarded = BearerTokenMiddleware(app, token=settings.http_token.get_secret_value())
 
-    logger.info(
-        "serving over authenticated http",
-        extra={"context": {"port": settings.http_port, "path": HTTP_PATH}},
-    )
+    log_event(LogEvent.SERVING_HTTP, port=settings.http_port)
     uvicorn.run(
         guarded,
         host=settings.http_host,

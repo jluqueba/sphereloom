@@ -37,6 +37,9 @@ def run_fake_camera(camera: FakeCamera, *, startup_timeout: float = 10.0) -> Ite
         host="127.0.0.1",
         port=port,
         log_level="error",
+        # uvicorn would otherwise install its own handlers, which print request lines and
+        # tracebacks as text and bypass SphereLoom's allow-listed logging (ADR-0018).
+        log_config=None,
         access_log=False,
         lifespan="off",
     )

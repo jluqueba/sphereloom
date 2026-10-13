@@ -37,7 +37,7 @@ Security reports are in scope when they affect SphereLoom code or documented dep
 - HTTP transport authentication and loopback binding
 - Workspace path-jail enforcement
 - Destructive-operation confirmation tokens
-- Log redaction for SSIDs, credentials, tokens, SDK paths, and personal file paths
+- Logging: anything that lets an SSID, credential, token, SDK path, personal file path, camera value or third-party log text reach a log record
 - Sidecar process boundaries for vendor SDK integrations
 - Job cancellation, concurrency limits, and file output handling
 

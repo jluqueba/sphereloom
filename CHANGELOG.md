@@ -103,6 +103,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Logging accepts only allow-listed structured fields: every record is a fixed event with
+  typed values, so camera values, absolute paths and error messages never reach the log,
+  and an error contributes only its type and code. Pattern redaction stays on as a second
+  line of defence. Architecture decision record ADR-0018 records the decision.
 - Contribution process: an up-front review of a change's invariants is required only for
   changes that handle untrusted input, write to disk or act on the camera; a new
   architecture decision record is reserved for decisions that change an accepted one or
@@ -144,6 +148,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Log lines from the MCP SDK, the HTTP client and the web server were written verbatim,
+  bypassing redaction, so a camera URL with its query string or an exception message with
+  absolute paths could reach the log. Every record now goes through one handler that keeps
+  only a third-party record's logger name, level and exception type, from `WARNING` up.
 - The published site served the contributing guide and the code of conduct as raw
   Markdown, because GitHub Pages does not render files with those names unless they are
   listed for inclusion. Both are now rendered pages, and a test fails if a published file

@@ -22,9 +22,10 @@ applyTo: "**/*.py"
 - Use async-first APIs for camera, media, server, and job execution code.
 - Do not block the event loop with synchronous file, network, or subprocess work.
 - Wrap unavoidable blocking work in an explicit executor or sidecar boundary.
-- Use structured logging with redaction.
+- Log only through `sphereloom.logging.log_event`, with a `LogEvent` member and allow-listed fields (ADR-0018). Do not import the standard `logging` module anywhere else; a codebase rule rejects it.
 - Do not use `print` for server, adapter, or tool logging.
-- Redact SSIDs, bearer tokens, credentials, SDK paths, and personal file paths before logging.
+- Never pass device values, raw exception messages, SDK paths or absolute paths to logging. Pass an error as `error=` so only its type and code are recorded, and log paths as `WorkspacePath` values from `workspace_relative`.
+- Start embedded servers such as uvicorn with `log_config=None`, so they do not install their own handlers.
 - Define a custom exception hierarchy for domain and adapter failures.
 - Map exceptions onto the public error taxonomy at MCP boundaries.
 - Include the structured `unsupported` error for unsupported capabilities.
@@ -109,7 +110,8 @@ Every finding names one location. The rule it implies almost never applies to on
 
 - For each test, ask what would have to break for it to fail. If that is not obvious, the test is decorative.
 - **A test's name is a claim. Make it exercise that claim.** A test called "retried even for an unsafe command" that uses a safe command passes without covering anything, and its green tick actively misleads.
-- For every test written to catch a regression, reintroduce the defect and confirm the test fails before pushing.
+- For every test written to catch a regression, or to guard a security property or a bound, reintroduce the defect and confirm the test fails before pushing. Run the test on the unmodified code first; a test that already fails makes every mutation look caught.
+- Test a guarantee with its defence in depth turned off. A logging test that leaves pattern redaction on passes when the allow-list leaks a path, because the path is then redacted.
 - Do not synchronise on a fixed `sleep` when asserting on concurrency; wait on an explicit signal, or the test passes under favourable scheduling even when the behaviour is wrong.
 - When testing a branch that waits, keep the conditions inside the window that triggers the wait, or the branch never runs.
 - Prefer injecting at a seam the production code already defines, such as a transport, a clock or a sleep function, over patching internals. A test coupled to implementation detail breaks on refactoring and tests the wrong thing meanwhile.

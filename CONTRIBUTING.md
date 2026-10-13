@@ -216,7 +216,7 @@ Follow the repository instructions in `.github/instructions/`:
 - Tests: `.github/instructions/testing.instructions.md`
 - Documentation: `.github/instructions/docs.instructions.md`
 
-Use Python 3.12+ syntax, full type annotations, pydantic models at boundaries, `httpx.AsyncClient` with explicit timeouts, structured logging with redaction, and the ports-and-adapters architecture.
+Use Python 3.12+ syntax, full type annotations, pydantic models at boundaries, `httpx.AsyncClient` with explicit timeouts, logging only through `log_event` with allow-listed fields, and the ports-and-adapters architecture.
 
 ## Testing without a camera
 
