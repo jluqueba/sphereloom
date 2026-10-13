@@ -311,6 +311,10 @@ def test_strict_decoding_and_encoding_are_accepted(source: str) -> None:
 SOURCE_ROOT = REPOSITORY_ROOT / "src" / "sphereloom"
 LOGGING_MODULE = SOURCE_ROOT / "logging.py"
 
+#: Enumeration types whose functional API builds a new enumeration from data. The logging
+#: module trusts SphereLoom's enumerations because their values are written in code.
+_ENUM_TYPES = frozenset({"Enum", "StrEnum", "IntEnum", "Flag", "IntFlag"})
+
 
 def logging_violations(source: str) -> list[str]:
     """Return every way `source` could log text outside the allow-list.
@@ -318,7 +322,9 @@ def logging_violations(source: str) -> list[str]:
     That is an import of the standard `logging` module or anything from it; a `log_event`
     call whose event is not written as `LogEvent.<NAME>`, that unpacks keywords with `**`,
     or that passes a keyword neither in `FIELDS` nor `error`; a `WorkspacePath` built
-    anywhere but the logging module, which bypasses `workspace_relative`; and a uvicorn server
+    anywhere but the logging module, which bypasses `workspace_relative`; an enumeration
+    built at run time, whose values could be data the logging module would then trust; and a
+    uvicorn server
     configured without `log_config=None`, which installs uvicorn's own text handlers.
     """
     from sphereloom.logging import FIELDS
@@ -342,6 +348,8 @@ def logging_violations(source: str) -> list[str]:
                 problems.append(
                     f"line {node.lineno}: WorkspacePath built outside the logging module"
                 )
+            elif name in _ENUM_TYPES and (node.args or node.keywords):
+                problems.append(f"line {node.lineno}: enumeration built at run time")
             elif name in {"Config", "run"} and _is_uvicorn(node) and not _disables_log_config(node):
                 problems.append(f"line {node.lineno}: uvicorn without log_config=None")
     return problems
@@ -427,6 +435,8 @@ def test_the_rule_sees_every_log_event_call() -> None:
         "uvicorn.Config(app, log_config=LOGGING_CONFIG)\n",
         "WorkspacePath('/home/alice/clip.mp4')\n",
         "logging_module.WorkspacePath(text)\n",
+        "StrEnum('Device', {'VALUE': value}, module='sphereloom.adapters')\n",
+        "enum.Enum('Device', names)\n",
     ],
     ids=[
         "import",
@@ -444,6 +454,8 @@ def test_the_rule_sees_every_log_event_call() -> None:
         "uvicorn-config-custom",
         "workspace-path",
         "workspace-path-attribute",
+        "functional-str-enum",
+        "functional-enum",
     ],
 )
 def test_logging_outside_the_allow_list_is_reported(source: str) -> None:
@@ -459,6 +471,8 @@ def test_logging_outside_the_allow_list_is_reported(source: str) -> None:
         "log_event(LogEvent.SERVER_STOPPED, error=exc)\n",
         "uvicorn.run(app, host=host, log_config=None)\n",
         "server.run('stdio')\n",
+        "class Transport(StrEnum):\n    STDIO = 'stdio'\n",
+        "Transport('stdio')\n",
     ],
     ids=[
         "project-logging",
@@ -467,6 +481,8 @@ def test_logging_outside_the_allow_list_is_reported(source: str) -> None:
         "error",
         "uvicorn-without-logging",
         "other-run",
+        "enum-class",
+        "enum-lookup",
     ],
 )
 def test_allow_listed_logging_is_accepted(source: str) -> None:

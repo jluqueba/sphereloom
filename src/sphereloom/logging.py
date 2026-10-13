@@ -145,7 +145,8 @@ def _safe_value(value: object) -> object:
         return bool(value)
     if isinstance(value, StrEnum):
         # An enumeration proves nothing by itself: one can be built at run time from any
-        # text. Only SphereLoom's own enumerations, with identifier-shaped values, pass.
+        # text. Only SphereLoom's own enumerations, with identifier-shaped values, pass; a
+        # codebase rule forbids building one at run time inside SphereLoom.
         text = str(value.value)
         own = type(value).__module__.startswith(f"{_ROOT_LOGGER}.")
         return text if own and _IDENTIFIER.fullmatch(text) else _REJECTED
