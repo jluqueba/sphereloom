@@ -4,67 +4,77 @@ SphereLoom exposes one coherent tool surface no matter which backend is connecte
 differs between backends is *which capabilities are available*, and that difference is data,
 not branching scattered through the tool layer.
 
-A capability is never silently missing. It is either available, or it reports why it is not
-and where to read more. See ADR-0003.
+A capability is never silently missing. It is in exactly one of three public states, and
+every state other than available says why and where to read more (ADR-0003, ADR-0016). No
+state names a milestone or a date.
 """
 
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Self
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class Capability(StrEnum):
-    """Everything a backend might be able to do."""
+    """Everything a backend might be able to do, by its public identifier."""
 
-    CONNECT = "connect"
-    READ_INFO = "read_info"
-    READ_STATUS = "read_status"
-    GET_OPTIONS = "get_options"
-    SET_OPTIONS = "set_options"
-    SET_EXPOSURE = "set_exposure"
-    TAKE_PHOTO = "take_photo"
-    RECORD_VIDEO = "record_video"
-    TIMELAPSE = "timelapse"
-    LIST_FILES = "list_files"
-    DOWNLOAD_FILE = "download_file"
-    DELETE_FILE = "delete_file"
-    FORMAT_STORAGE = "format_storage"
-    LIVE_PREVIEW = "live_preview"
-    IN_CAMERA_PHOTO_STITCH = "in_camera_photo_stitch"
-    READ_MEDIA_METADATA = "read_media_metadata"
-    STITCH_PHOTO = "stitch_photo"
-    STITCH_VIDEO = "stitch_video"
-    STABILISE_VIDEO = "stabilise_video"
-    COLOUR_ADJUST = "colour_adjust"
-    EXPORT_MEDIA = "export_media"
+    CAMERA_CONNECT = "camera.connect"
+    CAMERA_STATUS = "camera.status"
+    OPTIONS_READ = "options.read"
+    OPTIONS_WRITE = "options.write"
+    PHOTO_CAPTURE = "photo.capture"
+    VIDEO_RECORD = "video.record"
+    FILES_LIST = "files.list"
+    FILES_DOWNLOAD = "files.download"
+    FILES_DELETE = "files.delete"
+    EXPOSURE_CONTROL = "exposure.control"
+    PREVIEW_LIVE = "preview.live"
+    STORAGE_FORMAT = "storage.format"
+    MEDIA_STITCH_VIDEO = "media.stitch.video"
+    MEDIA_EXPORT = "media.export"
 
 
 class CapabilityState(StrEnum):
-    """Whether a capability can be used right now."""
+    """The three public states a capability can be in (ADR-0016)."""
 
     AVAILABLE = "available"
-    UNSUPPORTED = "unsupported"
-    NOT_IMPLEMENTED = "not_implemented"
-    REQUIRES_CONFIGURATION = "requires_configuration"
+    NOT_YET_AVAILABLE = "not_yet_available"
+    UNSUPPORTED_BY_VENDOR = "unsupported_by_vendor"
 
 
 class CapabilityStatus(BaseModel):
     """The answer to "can this backend do this, and if not, why not?".
 
-    `reason`, `docs_url` and `available_in` exist so an agent can explain the limitation to
-    a user and choose a different path, instead of retrying something that cannot work.
+    An unavailable capability always carries a `reason` and a `docs_url`, so an agent can
+    explain the limitation to a user and choose another path instead of retrying something
+    that cannot work. An available one carries neither.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     capability: Capability
-    state: CapabilityState
+    status: CapabilityState
     reason: str | None = None
     docs_url: str | None = None
-    available_in: str | None = None
+
+    @model_validator(mode="after")
+    def _explained_when_unavailable(self) -> Self:
+        if self.status is CapabilityState.AVAILABLE:
+            if self.reason is not None or self.docs_url is not None:
+                message = "An available capability carries no reason or documentation link."
+                raise ValueError(message)
+            return self
+        if not self.reason or not self.docs_url:
+            message = "An unavailable capability needs a reason and a documentation link."
+            raise ValueError(message)
+        if not self.docs_url.startswith("https://"):
+            message = "A capability documentation link must be an https URL."
+            raise ValueError(message)
+        return self
 
     @property
     def is_available(self) -> bool:
-        return self.state is CapabilityState.AVAILABLE
+        """Whether the capability can be used now."""
+        return self.status is CapabilityState.AVAILABLE
