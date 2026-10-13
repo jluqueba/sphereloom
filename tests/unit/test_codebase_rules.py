@@ -157,6 +157,52 @@ def test_a_pinned_or_local_action_is_accepted(step: str) -> None:
     assert unpinned_actions(workflow(step)) == []
 
 
+# Shared by the Python source rules below: what a name refers to, through any import alias.
+
+
+class ImportMap:
+    """Resolves names in one module to the dotted names they were imported as.
+
+    Every Python source rule matches on resolved names, so an alias such as
+    `import uvicorn as u` or `from enum import StrEnum as S` cannot hide a reference. Imports
+    anywhere in the module count, which errs towards reporting. Assigning an imported object
+    to a new name is not followed.
+    """
+
+    def __init__(self, tree: ast.Module) -> None:
+        self._names: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.asname:
+                        self._names[alias.asname] = alias.name
+                    else:
+                        root = alias.name.split(".")[0]
+                        self._names[root] = root
+            elif isinstance(node, ast.ImportFrom):
+                prefix = "." * node.level + (node.module or "")
+                for alias in node.names:
+                    separator = "" if prefix.endswith(".") else "."
+                    self._names[alias.asname or alias.name] = f"{prefix}{separator}{alias.name}"
+
+    def resolve(self, node: ast.expr) -> str | None:
+        """Return the dotted name `node` refers to, or `None` if it is not a plain reference."""
+        if isinstance(node, ast.Name):
+            return self._names.get(node.id, node.id)
+        if isinstance(node, ast.Attribute):
+            base = self.resolve(node.value)
+            return None if base is None else f"{base}.{node.attr}"
+        return None
+
+
+def imported_names(node: ast.Import | ast.ImportFrom) -> list[str]:
+    """Return the dotted name of everything an import statement brings in."""
+    if isinstance(node, ast.Import):
+        return [alias.name for alias in node.names]
+    prefix = "." * node.level + (node.module or "")
+    return [f"{prefix}.{alias.name}" for alias in node.names]
+
+
 # Rule: JSON from a device is decoded only by the strict, bounded decoder (ADR-0017).
 
 #: Where the rule applies: everything that can talk to a camera.
@@ -174,48 +220,45 @@ DECODING_EXEMPTIONS = {
     ),
 }
 
-#: Names that decode JSON when imported from the `json` package or reached through it.
-_JSON_DECODERS = frozenset({"load", "loads", "JSONDecoder", "decoder", "scanner"})
+#: What decoding JSON looks like once every alias is resolved.
+_JSON_DECODING = frozenset({"json.load", "json.loads", "json.JSONDecoder"})
+_JSON_DECODING_MODULES = ("json.decoder", "json.scanner")
+
+
+def _decodes_json(name: str) -> bool:
+    return (
+        name in _JSON_DECODING
+        or name in _JSON_DECODING_MODULES
+        or name.startswith(tuple(f"{module}." for module in _JSON_DECODING_MODULES))
+        or name == "json.*"
+    )
 
 
 def lenient_json_decoding(source: str) -> list[str]:
     """Return every place `source` decodes JSON without the strict decoder.
 
-    That is `JSONDecoder` reached as an attribute (`json.JSONDecoder`,
-    `json.decoder.JSONDecoder`, or through a module alias); `load`, `loads`, `decoder` or
-    `scanner` on the `json` module under any alias; an import from `json.decoder` or
-    `json.scanner`, a star import from `json`, or an import of a decoding name from it; and
-    any call to a `.json(...)` method, which is how HTTP and web libraries decode a body.
-    It errs towards reporting.
+    Names are resolved through imports first, so any alias counts. That is any reference
+    to `json.load`, `json.loads`, `json.JSONDecoder` or the `json.decoder` and
+    `json.scanner` modules; an import of any of them, or a star import from `json`; any
+    attribute named `JSONDecoder`, whatever it is reached through; and any call to a
+    `.json(...)` method, which is how HTTP and web libraries decode a body. It errs towards
+    reporting.
     """
     tree = ast.parse(source)
-    modules = {"json"}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            modules.update(
-                alias.asname for alias in node.names if alias.name == "json" and alias.asname
-            )
-
+    imports = ImportMap(tree)
     problems: list[str] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module is not None:
-            if node.module.startswith("json."):
-                problems.append(f"line {node.lineno}: from {node.module} import")
-            elif node.module == "json":
-                problems.extend(
-                    f"line {node.lineno}: from json import {alias.name}"
-                    for alias in node.names
-                    if alias.name in _JSON_DECODERS or alias.name == "*"
-                )
-        elif isinstance(node, ast.Attribute) and (
-            node.attr == "JSONDecoder"
-            or (
-                node.attr in _JSON_DECODERS
-                and isinstance(node.value, ast.Name)
-                and node.value.id in modules
+        if isinstance(node, ast.Import | ast.ImportFrom):
+            problems.extend(
+                f"line {node.lineno}: import {name}"
+                for name in imported_names(node)
+                if _decodes_json(name)
             )
-        ):
-            problems.append(f"line {node.lineno}: .{node.attr}")
+        elif isinstance(node, ast.Name | ast.Attribute):
+            name = imports.resolve(node)
+            named_decoder = isinstance(node, ast.Attribute) and node.attr == "JSONDecoder"
+            if named_decoder or (name is not None and _decodes_json(name)):
+                problems.append(f"line {node.lineno}: {name}")
         elif (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
@@ -268,6 +311,9 @@ def test_every_decoding_exemption_names_an_existing_path(path: str) -> None:
         "from json.decoder import JSONDecoder\n",
         "from json import JSONDecoder\nJSONDecoder().decode(body)\n",
         "from json import *\nloads(body)\n",
+        "from json import loads as parse\nparse(body)\n",
+        "from json import JSONDecoder as D\nD().decode(body)\n",
+        "import json.scanner\n",
     ],
     ids=[
         "loads",
@@ -285,6 +331,9 @@ def test_every_decoding_exemption_names_an_existing_path(path: str) -> None:
         "from-submodule",
         "imported-decoder-class",
         "star-import",
+        "aliased-call",
+        "aliased-decoder-class",
+        "scanner-module",
     ],
 )
 def test_lenient_json_decoding_is_reported(source: str) -> None:
@@ -319,56 +368,45 @@ _ENUM_TYPES = frozenset({"Enum", "StrEnum", "IntEnum", "Flag", "IntFlag"})
 def logging_violations(source: str) -> list[str]:
     """Return every way `source` could log text outside the allow-list.
 
-    That is an import of the standard `logging` module or anything from it; a `log_event`
-    call whose event is not written as `LogEvent.<NAME>`, that unpacks keywords with `**`,
-    or that passes a keyword neither in `FIELDS` nor `error`; a `WorkspacePath` built
-    anywhere but the logging module, which bypasses `workspace_relative`; an enumeration
-    built at run time, whose values could be data the logging module would then trust; and a
-    uvicorn server
+    Names are resolved through imports first, so any alias counts. That is an import of the
+    standard `logging` module or anything from it; a `log_event` call whose event is not
+    written as a `LogEvent` member, that unpacks keywords with `**`, or that passes a
+    keyword neither in `FIELDS` nor `error`; a `WorkspacePath` built anywhere but the
+    logging module, which bypasses `workspace_relative`; an enumeration built at run time,
+    whose values could be data the logging module would then trust; and a uvicorn server
     configured without `log_config=None`, which installs uvicorn's own text handlers.
     """
     from sphereloom.logging import FIELDS
 
+    tree = ast.parse(source)
+    imports = ImportMap(tree)
     problems: list[str] = []
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Import):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import | ast.ImportFrom):
             problems.extend(
-                f"line {node.lineno}: import {alias.name}"
-                for alias in node.names
-                if alias.name == "logging" or alias.name.startswith("logging.")
+                f"line {node.lineno}: import {name}"
+                for name in imported_names(node)
+                if name.split(".")[0] == "logging"
             )
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module is not None:
-            if node.module == "logging" or node.module.startswith("logging."):
-                problems.append(f"line {node.lineno}: from {node.module} import")
         elif isinstance(node, ast.Call):
-            name = _called_name(node)
-            if name == "log_event":
-                problems.extend(_log_event_problems(node, FIELDS))
-            elif name == "WorkspacePath":
+            name = imports.resolve(node.func) or ""
+            last = name.rsplit(".", 1)[-1]
+            if last == "log_event":
+                problems.extend(_log_event_problems(node, FIELDS, imports))
+            elif last == "WorkspacePath":
                 problems.append(
                     f"line {node.lineno}: WorkspacePath built outside the logging module"
                 )
-            elif name in _ENUM_TYPES and (node.args or node.keywords):
+            elif _is_enum_type(name) and (node.args or node.keywords):
                 problems.append(f"line {node.lineno}: enumeration built at run time")
-            elif name in {"Config", "run"} and _is_uvicorn(node) and not _disables_log_config(node):
+            elif name in {"uvicorn.run", "uvicorn.Config"} and not _disables_log_config(node):
                 problems.append(f"line {node.lineno}: uvicorn without log_config=None")
     return problems
 
 
-def _called_name(node: ast.Call) -> str | None:
-    if isinstance(node.func, ast.Name):
-        return node.func.id
-    if isinstance(node.func, ast.Attribute):
-        return node.func.attr
-    return None
-
-
-def _is_uvicorn(node: ast.Call) -> bool:
-    return (
-        isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "uvicorn"
-    )
+def _is_enum_type(name: str) -> bool:
+    module, _, last = name.rpartition(".")
+    return last in _ENUM_TYPES and module in {"", "enum"}
 
 
 def _disables_log_config(node: ast.Call) -> bool:
@@ -380,14 +418,11 @@ def _disables_log_config(node: ast.Call) -> bool:
     )
 
 
-def _log_event_problems(node: ast.Call, fields: frozenset[str]) -> list[str]:
+def _log_event_problems(node: ast.Call, fields: frozenset[str], imports: ImportMap) -> list[str]:
     problems: list[str] = []
     event = node.args[0] if node.args else None
-    if not (
-        isinstance(event, ast.Attribute)
-        and isinstance(event.value, ast.Name)
-        and event.value.id == "LogEvent"
-    ):
+    owner = imports.resolve(event.value) if isinstance(event, ast.Attribute) else None
+    if owner is None or owner.rsplit(".", 1)[-1] != "LogEvent":
         problems.append(f"line {node.lineno}: log_event without a literal LogEvent member")
     if len(node.args) > 1:
         problems.append(f"line {node.lineno}: log_event with extra positional arguments")
@@ -437,6 +472,13 @@ def test_the_rule_sees_every_log_event_call() -> None:
         "logging_module.WorkspacePath(text)\n",
         "StrEnum('Device', {'VALUE': value}, module='sphereloom.adapters')\n",
         "enum.Enum('Device', names)\n",
+        "from sphereloom.logging import WorkspacePath as WP\nWP('/home/alice/clip.mp4')\n",
+        "from enum import StrEnum as S\nS('Device', {'VALUE': value})\n",
+        "import enum as e\ne.StrEnum('Device', names)\n",
+        "import uvicorn as u\nu.run(app)\n",
+        "from uvicorn import Config as C\nC(app)\n",
+        "from sphereloom.logging import log_event as le\nle(LogEvent.SERVER_STARTED, serial=v)\n",
+        "import logging as log\nlog.getLogger()\n",
     ],
     ids=[
         "import",
@@ -456,6 +498,13 @@ def test_the_rule_sees_every_log_event_call() -> None:
         "workspace-path-attribute",
         "functional-str-enum",
         "functional-enum",
+        "aliased-workspace-path",
+        "aliased-enum",
+        "aliased-enum-module",
+        "aliased-uvicorn-module",
+        "aliased-uvicorn-config",
+        "aliased-log-event",
+        "aliased-logging-module",
     ],
 )
 def test_logging_outside_the_allow_list_is_reported(source: str) -> None:
@@ -473,6 +522,9 @@ def test_logging_outside_the_allow_list_is_reported(source: str) -> None:
         "server.run('stdio')\n",
         "class Transport(StrEnum):\n    STDIO = 'stdio'\n",
         "Transport('stdio')\n",
+        "from sphereloom.logging import LogEvent as E, log_event\nlog_event(E.SERVER_STOPPED)\n",
+        "import uvicorn as u\nu.run(app, log_config=None)\n",
+        "from sphereloom.config import Flag\nFlag('x')\n",
     ],
     ids=[
         "project-logging",
@@ -483,6 +535,9 @@ def test_logging_outside_the_allow_list_is_reported(source: str) -> None:
         "other-run",
         "enum-class",
         "enum-lookup",
+        "aliased-log-event-member",
+        "aliased-uvicorn-without-logging",
+        "project-type-named-like-an-enum",
     ],
 )
 def test_allow_listed_logging_is_accepted(source: str) -> None:
