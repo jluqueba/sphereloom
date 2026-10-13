@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Capability registry: every capability resolves to one of three states, available, not
+  yet available or not supported by the vendor API, each unavailable one with a reason and
+  a documentation link. Device operations run only after the capability check, which
+  happens before any request reaches the camera, and information reported by a camera can
+  narrow a capability but never widen one. A test keeps the registry in agreement with the
+  public capability page.
 - Error code `storage_unavailable` for a camera with no usable storage, such as a missing
   or unreadable card, distinct from `storage_full` because the remedy differs.
 - Strict, bounded decoding of every camera response: bodies are refused as soon as they
@@ -103,6 +109,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- The `unsupported` error now reports a `status` of `not_yet_available` or
+  `unsupported_by_vendor` instead of `available_in`, and names no milestone.
 - Logging accepts only allow-listed structured fields: every record is a fixed event with
   typed values, so camera values, absolute paths and error messages never reach the log,
   and an error contributes only its type and code. Pattern redaction stays on as a second

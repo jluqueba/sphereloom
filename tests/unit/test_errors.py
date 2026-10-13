@@ -49,7 +49,7 @@ def test_envelope_omits_absent_optional_fields() -> None:
     envelope = SphereLoomError("plain").to_envelope()["error"]
 
     assert isinstance(envelope, dict)
-    for absent in ("backend", "capability", "reason", "docs_url", "available_in", "details"):
+    for absent in ("backend", "capability", "reason", "docs_url", "status", "details"):
         assert absent not in envelope
 
 
@@ -62,20 +62,21 @@ def test_unsupported_error_explains_itself() -> None:
     error = UnsupportedCapabilityError(
         "Live preview is not available over Wi-Fi.",
         backend="osc",
-        capability="live_preview",
-        reason="The vendor documents that the OSC protocol provides no real-time feed.",
+        capability="preview.live",
+        status="unsupported_by_vendor",
+        reason="The camera's Wi-Fi API does not provide a live preview or stream.",
         docs_url="https://example.invalid/docs",
-        available_in="M3",
     )
     envelope = error.to_envelope()["error"]
 
     assert isinstance(envelope, dict)
     assert envelope["code"] == "unsupported"
     assert envelope["backend"] == "osc"
-    assert envelope["capability"] == "live_preview"
+    assert envelope["capability"] == "preview.live"
+    assert envelope["status"] == "unsupported_by_vendor"
     assert envelope["reason"]
     assert envelope["docs_url"]
-    assert envelope["available_in"] == "M3"
+    assert "available_in" not in envelope
 
 
 @pytest.mark.parametrize("code", list(ErrorCode))

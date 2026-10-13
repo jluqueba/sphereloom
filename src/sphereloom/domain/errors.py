@@ -65,7 +65,7 @@ class SphereLoomError(Exception):
         capability: str | None = None,
         reason: str | None = None,
         docs_url: str | None = None,
-        available_in: str | None = None,
+        status: str | None = None,
         details: dict[str, JsonValue] | None = None,
         retryable: Literal[False] | None = None,
     ) -> None:
@@ -75,7 +75,7 @@ class SphereLoomError(Exception):
         self.capability = capability
         self.reason = reason
         self.docs_url = docs_url
-        self.available_in = available_in
+        self.status = status
         self.details: dict[str, JsonValue] = {} if details is None else details
         # Compared with `is not False` rather than read as a flag, so an untyped caller
         # passing `True` still cannot widen the class default.
@@ -103,7 +103,7 @@ class SphereLoomError(Exception):
             "capability": self.capability,
             "reason": self.reason,
             "docs_url": self.docs_url,
-            "available_in": self.available_in,
+            "status": self.status,
         }
         payload.update({key: _field(value) for key, value in optional.items() if value is not None})
         if self.details:
@@ -119,7 +119,8 @@ class UnsupportedCapabilityError(SphereLoomError):
     """The active backend or camera model cannot perform this operation.
 
     This is a first-class answer, not a bug: it carries the reason, a documentation link and
-    the milestone that will deliver the capability, when one is planned.
+    a `status` of `not_yet_available` or `unsupported_by_vendor`, and names no milestone
+    (ADR-0016).
     """
 
     code = ErrorCode.UNSUPPORTED

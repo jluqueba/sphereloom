@@ -22,7 +22,7 @@ applyTo: "src/sphereloom/tools/**/*.py"
 - Include `code`, `message`, and relevant context fields in errors.
 - Unsupported capabilities must return `{code: "unsupported", backend, capability, status, reason, docs_url}`, where `status` is `not_yet_available` or `unsupported_by_vendor`.
 - Tool descriptions, results and errors describe the current state only and never name a milestone (ADR-0016).
-- Check the capability registry before dispatching to an adapter.
+- Check the capability registry before dispatching to an adapter: call device operations through `sphereloom.capabilities.registry.guarded`, which refuses before the operation is created.
 - Do not let adapter-specific exceptions leak through the MCP boundary.
 - Destructive tools such as delete and format require a confirmation token.
 - Confirmation-token flows must be two-step and expire after the configured TTL.
@@ -31,4 +31,5 @@ applyTo: "src/sphereloom/tools/**/*.py"
 - Job management goes through `jobs_list`, `jobs_get`, and `jobs_cancel`.
 - Make cancellation behavior explicit in the output model.
 - Do not claim live preview, streaming, OSC exposure control, or OSC video stitching support.
+- Mark a capability `available` in `sphereloom/capabilities/data.py` and `docs/CAPABILITIES.md` in the same pull request that delivers its tool, and not before.
 - For planned-but-unavailable tools, return the structured `unsupported` error honestly.
