@@ -33,6 +33,9 @@ class CapabilityRegistry:
         if declared is None or set(declared) != set(Capability):
             message = f"No complete capability declaration exists for the {backend!r} backend."
             raise InternalError(message)
+        if any(status.capability is not capability for capability, status in declared.items()):
+            message = f"A capability is declared under another identifier for {backend!r}."
+            raise InternalError(message)
         self._backend = backend
         self._declared = declared
 
@@ -67,9 +70,11 @@ class CapabilityRegistry:
         status = self.resolve(capability, runtime)
         if status.is_available:
             return
+        # Fixed text only: a runtime refinement's reason comes from the device, so it travels
+        # in the `reason` field, which the envelope bounds, never in the message.
         message = (
             f"The capability {capability.value} is not available on the {self._backend} "
-            f"backend. {status.reason}"
+            "backend. See the reason and documentation link in this error."
         )
         raise UnsupportedCapabilityError(
             message,

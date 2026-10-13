@@ -229,6 +229,36 @@ def test_an_incomplete_declaration_is_an_internal_error() -> None:
         CapabilityRegistry("osc", {"osc": table})
 
 
+def test_a_status_declared_under_another_identifier_is_an_internal_error() -> None:
+    table = dict(STATIC_CAPABILITIES["osc"])
+    table[Capability.CAMERA_CONNECT] = STATIC_CAPABILITIES["osc"][Capability.PREVIEW_LIVE]
+
+    with pytest.raises(InternalError):
+        CapabilityRegistry("osc", {"osc": table})
+
+
+def test_a_device_supplied_reason_never_reaches_the_message() -> None:
+    """A runtime reason comes from the camera; only the bounded `reason` field carries it."""
+    registry = _registry_with_connect_available()
+    long_reason = "device text " * 10_000
+    runtime = {
+        Capability.CAMERA_CONNECT: CapabilityStatus(
+            capability=Capability.CAMERA_CONNECT,
+            status=CapabilityState.NOT_YET_AVAILABLE,
+            reason=long_reason,
+            docs_url="https://example.invalid/model",
+        )
+    }
+
+    with pytest.raises(UnsupportedCapabilityError) as caught:
+        registry.require(Capability.CAMERA_CONNECT, runtime)
+
+    assert "device text" not in caught.value.message
+    rendered = caught.value.to_envelope()["error"]
+    assert isinstance(rendered, dict)
+    assert len(str(rendered["reason"])) < len(long_reason)
+
+
 @pytest.mark.parametrize(
     "fields",
     [
