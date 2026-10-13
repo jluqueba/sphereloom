@@ -78,8 +78,9 @@ _OSC: dict[Capability, CapabilityStatus] = {
     Capability.MEDIA_EXPORT: _not_yet(Capability.MEDIA_EXPORT, _NEEDS_MEDIA_SDK),
 }
 
-#: Every backend's declarations, keyed by the backend name reported in results and errors.
-#: The fake camera speaks the same Wi-Fi protocol, so it is served by the `osc` entry.
+#: Every backend's declarations, keyed by the configured backend name, which is also the
+#: name reported in results and errors. The fake camera speaks the same Wi-Fi protocol as a
+#: real one, so it declares the same capabilities under its own name.
 STATIC_CAPABILITIES: Mapping[str, Mapping[Capability, CapabilityStatus]] = MappingProxyType(
-    {"osc": MappingProxyType(_OSC)}
+    {"osc": MappingProxyType(_OSC), "fake": MappingProxyType(_OSC)}
 )

@@ -1,1 +1,1 @@
-"""MCP tools. Each tool validates input, checks the capability, calls a port and maps the result."""
+"""MCP tools: the agent-facing surface, one coherent set whatever the backend."""

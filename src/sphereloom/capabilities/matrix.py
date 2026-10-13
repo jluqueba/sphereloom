@@ -4,8 +4,9 @@
 or less, than the code (AC-2.1.4, ADR-0016). Only the table between two markers is
 generated; the prose around it is written by hand.
 
-The labels and notes below are presentation only. The state of each capability, and the
-reason for any capability that is not available, come from the registry.
+The labels and notes below are presentation only. The state of each capability comes from
+the registry, and so does the note of any unavailable capability that has no presentation
+note of its own, which today means the vendor gaps.
 """
 
 from __future__ import annotations

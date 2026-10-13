@@ -87,9 +87,11 @@ async def test_the_tool_is_declared_read_only(settings: Settings) -> None:
 async def test_every_configured_backend_lists_its_capabilities(
     monkeypatch: pytest.MonkeyPatch, tmp_path: object, backend: str
 ) -> None:
+    """The result names the configured backend, as `server_health` and errors do."""
     monkeypatch.setenv("SPHERELOOM_CAMERA_BACKEND", backend)
     monkeypatch.setenv("SPHERELOOM_WORKSPACE_DIR", str(tmp_path))
 
     payload = await _capabilities(Settings())
 
+    assert payload["backend"] == backend
     assert len(payload["capabilities"]) == len(Capability)

@@ -45,6 +45,11 @@ def test_every_capability_resolves_to_exactly_one_state(backend: str) -> None:
     assert {status.status for status in statuses} <= set(CapabilityState)
 
 
+def test_the_fake_camera_declares_what_the_real_one_does() -> None:
+    """The fake speaks the same Wi-Fi protocol, so a demo never shows more than a camera can."""
+    assert CapabilityRegistry("fake").resolve_all() == CapabilityRegistry("osc").resolve_all()
+
+
 def test_the_identifiers_are_exactly_those_of_the_plan() -> None:
     assert {capability.value for capability in Capability} == {
         "camera.connect",
