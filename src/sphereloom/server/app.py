@@ -20,11 +20,9 @@ from sphereloom import __version__
 from sphereloom.config import Settings, load_settings
 from sphereloom.domain.clock import SystemClock
 from sphereloom.domain.ids import SecureIdFactory
-from sphereloom.logging import get_logger
+from sphereloom.logging import LogEvent, log_event
 from sphereloom.security.workspace import Workspace
 from sphereloom.server.context import AppContext
-
-logger = get_logger("server")
 
 SERVER_INSTRUCTIONS = """\
 SphereLoom controls 360 cameras and processes 360 media on this machine.
@@ -67,20 +65,15 @@ def build_server(settings: Settings | None = None) -> MCPServer[AppContext]:
             clock=SystemClock(),
             id_factory=SecureIdFactory(),
         )
-        logger.info(
-            "server started",
-            extra={
-                "context": {
-                    "transport": resolved.transport.value,
-                    "camera_backend": resolved.camera_backend.value,
-                    "version": __version__,
-                }
-            },
+        log_event(
+            LogEvent.SERVER_STARTED,
+            transport=resolved.transport,
+            camera_backend=resolved.camera_backend,
         )
         try:
             yield context
         finally:
-            logger.info("server stopped")
+            log_event(LogEvent.SERVER_STOPPED)
 
     server: MCPServer[AppContext] = MCPServer(
         name="sphereloom",

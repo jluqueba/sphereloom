@@ -9,11 +9,9 @@ from collections.abc import Sequence
 from sphereloom import __version__
 from sphereloom.config import load_settings
 from sphereloom.domain.errors import SphereLoomError
-from sphereloom.logging import configure_logging, get_logger
+from sphereloom.logging import LogEvent, configure_logging, log_event
 from sphereloom.server.app import build_server
 from sphereloom.server.transport import run as run_transport
-
-logger = get_logger("cli")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,14 +51,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_logging(level=settings.log_level.value, redaction=settings.log_redact)
 
     if args.check_config:
-        logger.info("configuration is valid")
+        log_event(LogEvent.CONFIG_VALID)
         return 0
 
     server = build_server(settings)
     try:
         run_transport(server, settings)
     except KeyboardInterrupt:  # pragma: no cover - interactive shutdown
-        logger.info("interrupted, shutting down")
+        log_event(LogEvent.SERVER_INTERRUPTED)
         return 130
     return 0
 

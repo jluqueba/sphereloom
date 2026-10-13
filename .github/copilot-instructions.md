@@ -126,9 +126,8 @@
 - Never trust client-provided paths without normalization and jail checks.
 - Destructive operations such as delete and format require a two-step confirmation token.
 - Confirmation tokens must expire.
-- Logs must redact SSIDs, credentials, tokens, and personal file paths.
-- Do not log raw bearer tokens or SDK paths.
-- Prefer structured logging over free-form strings.
+- Log only through `log_event` with a `LogEvent` member and allow-listed fields (ADR-0018). Never pass device values, raw exception messages or absolute paths to logging; log workspace-relative paths only.
+- Pattern redaction of SSIDs, credentials, tokens and personal paths is defence in depth, never the guarantee.
 - Do not use `print` for server logging.
 - Treat MCP tools as real-world device control, not harmless function calls.
 
@@ -161,7 +160,7 @@
 - Inject clocks and ID factories for deterministic tests.
 - Every error taxonomy code must have at least one test.
 - Include tests for capability checks and unsupported responses.
-- Include tests for path jail enforcement and redaction behavior when implementing those features.
+- Include tests for path jail enforcement and logging behavior when implementing those features. Run tests of the logging allow-list with pattern redaction off, so a leak cannot pass by being redacted.
 - Inject time, sleeping and failures through seams the production code already defines; never synchronise a test on wall-clock time.
 - Never assert a platform's own behaviour. CI runs Ubuntu and Windows, and a filename a tab makes illegal on one is legal on the other. Inject the failure instead of provoking it, so the test asserts the guarantee rather than the quirk; gate with `skipif` only when injection is impossible.
 - Run the suite on Linux as well as Windows before pushing; CI runs both.

@@ -303,3 +303,162 @@ def test_lenient_json_decoding_is_reported(source: str) -> None:
 )
 def test_strict_decoding_and_encoding_are_accepted(source: str) -> None:
     assert lenient_json_decoding(source) == []
+
+
+# Rule: only `sphereloom.logging` touches the standard logging module, and every event it
+# logs uses allow-listed fields (ADR-0018).
+
+SOURCE_ROOT = REPOSITORY_ROOT / "src" / "sphereloom"
+LOGGING_MODULE = SOURCE_ROOT / "logging.py"
+
+
+def logging_violations(source: str) -> list[str]:
+    """Return every way `source` could log text outside the allow-list.
+
+    That is an import of the standard `logging` module or anything from it; a `log_event`
+    call whose event is not written as `LogEvent.<NAME>`, that unpacks keywords with `**`,
+    or that passes a keyword neither in `FIELDS` nor `error`; and a uvicorn server
+    configured without `log_config=None`, which installs uvicorn's own text handlers.
+    """
+    from sphereloom.logging import FIELDS
+
+    problems: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            problems.extend(
+                f"line {node.lineno}: import {alias.name}"
+                for alias in node.names
+                if alias.name == "logging" or alias.name.startswith("logging.")
+            )
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module is not None:
+            if node.module == "logging" or node.module.startswith("logging."):
+                problems.append(f"line {node.lineno}: from {node.module} import")
+        elif isinstance(node, ast.Call):
+            name = _called_name(node)
+            if name == "log_event":
+                problems.extend(_log_event_problems(node, FIELDS))
+            elif name in {"Config", "run"} and _is_uvicorn(node) and not _disables_log_config(node):
+                problems.append(f"line {node.lineno}: uvicorn without log_config=None")
+    return problems
+
+
+def _called_name(node: ast.Call) -> str | None:
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    return None
+
+
+def _is_uvicorn(node: ast.Call) -> bool:
+    return (
+        isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "uvicorn"
+    )
+
+
+def _disables_log_config(node: ast.Call) -> bool:
+    return any(
+        keyword.arg == "log_config"
+        and isinstance(keyword.value, ast.Constant)
+        and keyword.value.value is None
+        for keyword in node.keywords
+    )
+
+
+def _log_event_problems(node: ast.Call, fields: frozenset[str]) -> list[str]:
+    problems: list[str] = []
+    event = node.args[0] if node.args else None
+    if not (
+        isinstance(event, ast.Attribute)
+        and isinstance(event.value, ast.Name)
+        and event.value.id == "LogEvent"
+    ):
+        problems.append(f"line {node.lineno}: log_event without a literal LogEvent member")
+    if len(node.args) > 1:
+        problems.append(f"line {node.lineno}: log_event with extra positional arguments")
+    for keyword in node.keywords:
+        if keyword.arg is None:
+            problems.append(f"line {node.lineno}: log_event with **keywords")
+        elif keyword.arg not in fields and keyword.arg != "error":
+            problems.append(f"line {node.lineno}: log_event field {keyword.arg}")
+    return problems
+
+
+def logging_sources() -> list[Path]:
+    files = sorted(SOURCE_ROOT.rglob("*.py"))
+    assert LOGGING_MODULE in files, "the logging module moved; the rule would check nothing"
+    return [path for path in files if path != LOGGING_MODULE]
+
+
+@pytest.mark.parametrize(
+    "path", logging_sources(), ids=lambda path: path.relative_to(REPOSITORY_ROOT).as_posix()
+)
+def test_logging_goes_only_through_allow_listed_events(path: Path) -> None:
+    assert logging_violations(path.read_text("utf-8")) == []
+
+
+def test_the_rule_sees_every_log_event_call() -> None:
+    """At least one checked module logs, so the call check is not vacuous."""
+    assert any("log_event(" in path.read_text("utf-8") for path in logging_sources())
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import logging\n",
+        "import logging.handlers\n",
+        "import logging as log\n",
+        "from logging import getLogger\n",
+        "from logging.handlers import RotatingFileHandler\n",
+        "log_event(event)\n",
+        'log_event("server_started")\n',
+        "log_event(LogEvent.SERVER_STARTED, details)\n",
+        "log_event(LogEvent.SERVER_STARTED, **fields)\n",
+        "log_event(LogEvent.SERVER_STARTED, serial=value)\n",
+        "logging_module.log_event(LogEvent.SERVER_STARTED, message=text)\n",
+        "uvicorn.run(app)\n",
+        "uvicorn.Config(app, log_config=LOGGING_CONFIG)\n",
+    ],
+    ids=[
+        "import",
+        "import-submodule",
+        "aliased-import",
+        "from-import",
+        "from-submodule",
+        "event-variable",
+        "event-string",
+        "positional-field",
+        "keyword-unpacking",
+        "unknown-field",
+        "attribute-call",
+        "uvicorn-run-default",
+        "uvicorn-config-custom",
+    ],
+)
+def test_logging_outside_the_allow_list_is_reported(source: str) -> None:
+    assert logging_violations(source) != []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from sphereloom.logging import LogEvent, log_event\n",
+        "from .logging import log_event\n",
+        "log_event(LogEvent.SERVER_STARTED, transport=Transport.STDIO)\n",
+        "log_event(LogEvent.SERVER_STOPPED, error=exc)\n",
+        "uvicorn.run(app, host=host, log_config=None)\n",
+        "server.run('stdio')\n",
+    ],
+    ids=[
+        "project-logging",
+        "relative-import",
+        "allowed-field",
+        "error",
+        "uvicorn-without-logging",
+        "other-run",
+    ],
+)
+def test_allow_listed_logging_is_accepted(source: str) -> None:
+    assert logging_violations(source) == []

@@ -50,7 +50,8 @@ MCP client ──stdio──▶ SphereLoom server
 5. **The core is deterministic.** No language model runs inside the server. It needs no
    model credentials to start and costs nothing to poll; any MCP client works.
 6. **Safe by default.** stdio transport with no listener, a workspace path jail,
-   confirmation tokens for destructive actions, bounded concurrency and redacted logs. HTTP
+   confirmation tokens for destructive actions, bounded concurrency and logs that carry no
+   untrusted text. HTTP
    access is opt-in and requires a loopback bind plus a token.
 7. **Testable without hardware.** A protocol-faithful fake camera runs the whole suite and
    doubles as a demo backend.
@@ -110,7 +111,7 @@ read from `SPHERELOOM_*` environment variables, every one of which is documented
 src/sphereloom/
   cli.py          entry point and argument parsing
   config.py       settings model, validated once at startup
-  logging.py      structured stderr logging with redaction
+  logging.py      structured stderr logging from an allow-list of fields
   domain/         models, capabilities, errors, clock, identifiers
   ports/          CameraPort and MediaPort protocols
   security/       path jail, transport authentication
@@ -139,7 +140,7 @@ Tests are organised in three tiers:
 
 | Tier | What it covers | Runs in CI |
 | --- | --- | --- |
-| `tests/unit` | Pure logic: path jail, error taxonomy, configuration, redaction | Yes |
+| `tests/unit` | Pure logic: path jail, error taxonomy, configuration, logging | Yes |
 | `tests/component` | The real MCP server and real tools against a fake camera on loopback | Yes |
 | `tests/integration` | A real camera, marked `@pytest.mark.hardware` | No, never |
 
@@ -158,7 +159,7 @@ Every setting is an environment variable prefixed `SPHERELOOM_`, documented in
 name the offending variable.
 
 The defaults are the cautious ones: stdio transport with no network listener, destructive
-tools disabled, log redaction on.
+tools disabled, log redaction on as a second line of defence.
 
 ## Security model
 
@@ -171,8 +172,10 @@ rails protect your workflow and your filesystem:
   absolute paths and escaping symlinks are rejected after full resolution.
 - **Confirmations.** Destructive operations are disabled by default and require a
   single-use, target-bound token.
-- **Redaction.** Credentials, network names, query strings and absolute paths are stripped
-  from logs. Logging goes to stderr only.
+- **Logging.** Logs are structured events built from an allow-list of fields. Camera
+  values, file contents, absolute paths, error messages and the text of other libraries'
+  log lines never reach them; a pattern filter for credentials, network names, query
+  strings and absolute paths is a second line of defence. Logging goes to stderr only.
 
 One thing to be clear about: the camera's own API has no authentication. Anything on its
 access point can command it. SphereLoom cannot fix that, and does not pretend to.

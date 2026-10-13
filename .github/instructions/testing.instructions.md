@@ -20,7 +20,7 @@ applyTo: "tests/**/*.py"
 - Inject ID factories for deterministic job IDs, confirmation tokens, cursors, and request IDs.
 - Prefer Arrange-Act-Assert structure in test bodies.
 - Use descriptive test names that state the behavior under test.
-- Cover success, capability-unsupported, timeout, cancellation, path-jail, and redaction paths as features land.
+- Cover success, capability-unsupported, timeout, cancellation, path-jail, and logging paths as features land.
 - Every public error-taxonomy code must have at least one test.
 - Keep tests independent and order-insensitive.
 - Avoid sleeping in tests; use fake clocks or explicit synchronization.
