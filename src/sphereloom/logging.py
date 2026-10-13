@@ -87,7 +87,11 @@ FIELDS = frozenset({"camera_backend", "path", "port", "transport"})
 
 
 class WorkspacePath(str):
-    """A path relative to the workspace, safe to log. Only `workspace_relative` makes one."""
+    """A path relative to the workspace, safe to log.
+
+    In SphereLoom's code only `workspace_relative` makes one, which a codebase rule
+    enforces; a value that is not a relative path is rejected when logged all the same.
+    """
 
     __slots__ = ()
 
@@ -100,6 +104,15 @@ class _Rejected:
 
 
 _REJECTED = _Rejected()
+
+
+@dataclass(frozen=True, slots=True)
+class _EventRecord:
+    """What `log_event` attaches to a record. Only records carrying one are events."""
+
+    event: str
+    message: str
+    fields: dict[str, object]
 
 
 def log_event(event: LogEvent, *, error: BaseException | None = None, **fields: LogValue) -> None:
@@ -122,7 +135,7 @@ def log_event(event: LogEvent, *, error: BaseException | None = None, **fields: 
             accepted["error_code"] = error.code.value
     if rejected:
         accepted["rejected_fields"] = sorted(rejected)
-    payload = (event.value, spec.message, accepted)
+    payload = _EventRecord(event.value, spec.message, accepted)
     logger.log(spec.level, spec.message, extra={_PAYLOAD_ATTRIBUTE: payload})
 
 
@@ -131,14 +144,23 @@ def _safe_value(value: object) -> object:
     if isinstance(value, bool):
         return bool(value)
     if isinstance(value, StrEnum):
-        return str(value.value)
+        # An enumeration proves nothing by itself: one can be built at run time from any
+        # text. Only SphereLoom's own enumerations, with identifier-shaped values, pass.
+        text = str(value.value)
+        own = type(value).__module__.startswith(f"{_ROOT_LOGGER}.")
+        return text if own and _IDENTIFIER.fullmatch(text) else _REJECTED
     if isinstance(value, WorkspacePath):
-        return str(value)
+        return str(value) if _is_relative_path(value) else _REJECTED
     if type(value) is int and -_INT64_LIMIT <= value < _INT64_LIMIT:
         return value
     if type(value) is float and math.isfinite(value):
         return value
     return _REJECTED
+
+
+def _is_relative_path(text: str) -> bool:
+    parts = text.replace("\\", "/").split("/")
+    return bool(text) and not text.startswith(("/", "\\")) and ":" not in text and ".." not in parts
 
 
 def _identifier(text: str) -> str:
@@ -167,9 +189,8 @@ class JsonFormatter(logging.Formatter):
             "logger": _identifier(record.name),
         }
         payload = getattr(record, _PAYLOAD_ATTRIBUTE, None)
-        if record.name.startswith(f"{_ROOT_LOGGER}.") and isinstance(payload, tuple):
-            event, message, fields = payload
-            output.update({"event": event, "message": message, **fields})
+        if record.name.startswith(f"{_ROOT_LOGGER}.") and isinstance(payload, _EventRecord):
+            output.update({"event": payload.event, "message": payload.message, **payload.fields})
         else:
             output["event"] = "third_party_record"
             if record.exc_info and record.exc_info[0] is not None:
@@ -191,6 +212,17 @@ class _StderrHandler(logging.StreamHandler[TextIO]):
         return
 
 
+class _ThirdPartyLevelFilter(logging.Filter):
+    """Drops records below `WARNING` from loggers that are not SphereLoom's.
+
+    The root logger's level is not enough: a library that sets its own logger to `DEBUG`
+    emits below it, because propagation does not consult the levels of ancestors.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.name.startswith(f"{_ROOT_LOGGER}.") or record.levelno >= logging.WARNING
+
+
 def configure_logging(*, level: str = "INFO", redaction: bool = True) -> None:
     """Install the stderr JSON handler on the root logger. Safe to call more than once.
 
@@ -200,6 +232,7 @@ def configure_logging(*, level: str = "INFO", redaction: bool = True) -> None:
     """
     handler = _StderrHandler(sys.stderr)
     handler.setFormatter(JsonFormatter(redaction=redaction))
+    handler.addFilter(_ThirdPartyLevelFilter())
 
     root = logging.getLogger()
     for existing in list(root.handlers):

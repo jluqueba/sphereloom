@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from sphereloom.config import CameraBackend, Settings, Transport
+from sphereloom.config import CameraBackend, LogLevel, Settings, Transport
 from sphereloom.domain.errors import StorageFullError
 from sphereloom.logging import (
     FIELDS,
@@ -30,7 +30,8 @@ from sphereloom.logging import (
 )
 from sphereloom.server.app import build_server
 
-SECRET = "s3cret-alice-holiday"
+#: Stands for any untrusted text: a device value, a file name, an exception message.
+UNTRUSTED = "device-text-alice-holiday"
 
 
 class _Colour(StrEnum):
@@ -98,7 +99,7 @@ def test_the_level_comes_from_the_event(capsys: pytest.CaptureFixture[str]) -> N
 def test_a_field_outside_the_allow_list_is_dropped(capsys: pytest.CaptureFixture[str]) -> None:
     configure_logging(redaction=False)
 
-    log_event(LogEvent.SERVING_HTTP, port=1, serial=_Colour.RED)
+    log_event(LogEvent.SERVING_HTTP, port=1, serial=Transport.STDIO)
 
     record = _only_record(capsys)
     assert "serial" not in record
@@ -109,16 +110,24 @@ def test_a_field_outside_the_allow_list_is_dropped(capsys: pytest.CaptureFixture
 @pytest.mark.parametrize(
     "value",
     [
-        SECRET,
-        _NotAPath(SECRET),
-        SECRET.encode(),
+        UNTRUSTED,
+        _NotAPath(UNTRUSTED),
+        UNTRUSTED.encode(),
         float("nan"),
         float("inf"),
         2**63,
         -(2**63) - 1,
         object(),
-        Path("/home/alice") / SECRET,
-        ValueError(SECRET),
+        Path("/home/alice") / UNTRUSTED,
+        ValueError(UNTRUSTED),
+        _Colour.RED,
+        StrEnum(  # type: ignore[attr-defined]  # an enumeration built from data at run time
+            "Device", {"VALUE": f"/home/alice/{UNTRUSTED}"}, module="sphereloom.adapters"
+        ).VALUE,
+        WorkspacePath(f"/home/alice/{UNTRUSTED}"),
+        WorkspacePath(rf"C:\Users\alice\{UNTRUSTED}"),
+        WorkspacePath(f"downloads/../../{UNTRUSTED}"),
+        WorkspacePath(""),
     ],
     ids=[
         "plain-str",
@@ -131,6 +140,12 @@ def test_a_field_outside_the_allow_list_is_dropped(capsys: pytest.CaptureFixture
         "object",
         "path",
         "exception",
+        "foreign-enum",
+        "enum-built-from-data",
+        "absolute-posix-path",
+        "absolute-windows-path",
+        "parent-traversal",
+        "empty-path",
     ],
 )
 def test_an_unsafe_value_is_dropped(capsys: pytest.CaptureFixture[str], value: object) -> None:
@@ -141,7 +156,7 @@ def test_an_unsafe_value_is_dropped(capsys: pytest.CaptureFixture[str], value: o
     record = _only_record(capsys)
     assert "port" not in record
     assert record["rejected_fields"] == ["port"]
-    assert SECRET not in json.dumps(record)
+    assert UNTRUSTED not in json.dumps(record)
 
 
 @pytest.mark.parametrize(
@@ -152,7 +167,7 @@ def test_an_unsafe_value_is_dropped(capsys: pytest.CaptureFixture[str], value: o
         (-(2**63), -(2**63)),
         (2**63 - 1, 2**63 - 1),
         (1.5, 1.5),
-        (_Colour.RED, "red"),
+        (LogLevel.WARNING, "WARNING"),
         (WorkspacePath("downloads/clip.insv"), "downloads/clip.insv"),
     ],
     ids=["bool", "int", "int64-min", "int64-max", "float", "str-enum", "workspace-path"],
@@ -171,15 +186,15 @@ def test_only_the_type_and_code_of_an_error_are_logged(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     configure_logging(redaction=False)
-    error = StorageFullError(f"card full at /home/alice/{SECRET}")
-    error.__cause__ = OSError(SECRET)
+    error = StorageFullError(f"card full at /home/alice/{UNTRUSTED}")
+    error.__cause__ = OSError(UNTRUSTED)
 
     log_event(LogEvent.SERVER_STOPPED, error=error)
 
     record = _only_record(capsys)
     assert record["exception_type"] == "StorageFullError"
     assert record["error_code"] == "storage_full"
-    assert SECRET not in json.dumps(record)
+    assert UNTRUSTED not in json.dumps(record)
     assert "alice" not in json.dumps(record)
 
 
@@ -188,12 +203,12 @@ def test_a_third_party_record_carries_no_text(capsys: pytest.CaptureFixture[str]
     configure_logging(redaction=False)
 
     logging.getLogger("httpx").warning(
-        'HTTP Request: GET http://192.168.42.1/DCIM/%s.jpg?token=abc "HTTP/1.1 200 OK"', SECRET
+        'HTTP Request: GET http://192.168.42.1/DCIM/%s.jpg?token=abc "HTTP/1.1 200 OK"', UNTRUSTED
     )
     try:
-        raise ValueError(rf"camera said C:\Users\alice\{SECRET}")
+        raise ValueError(rf"camera said C:\Users\alice\{UNTRUSTED}")
     except ValueError:
-        logging.getLogger("mcp.server.mcpserver.server").exception("Tool %r failed", SECRET)
+        logging.getLogger("mcp.server.mcpserver.server").exception("Tool %r failed", UNTRUSTED)
 
     first, second = _records(capsys)
     assert first == {
@@ -204,7 +219,7 @@ def test_a_third_party_record_carries_no_text(capsys: pytest.CaptureFixture[str]
     }
     assert second["exception_type"] == "ValueError"
     assert second["event"] == "third_party_record"
-    assert SECRET not in json.dumps([first, second])
+    assert UNTRUSTED not in json.dumps([first, second])
     assert "alice" not in json.dumps([first, second])
 
 
@@ -218,10 +233,37 @@ def test_third_party_records_below_warning_are_not_emitted(
     assert _records(capsys) == []
 
 
+def test_a_library_that_lowers_its_own_level_is_still_held_to_warning(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Propagation ignores ancestor levels, so the root logger's `WARNING` alone is not enough."""
+    configure_logging(redaction=False)
+    chatty = logging.getLogger("chatty.library")
+    monkeypatch.setattr(chatty, "level", logging.DEBUG)
+
+    chatty.info("below warning")
+
+    assert _records(capsys) == []
+
+
+def test_a_forged_event_payload_is_treated_as_a_third_party_record(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging(redaction=False)
+
+    logging.getLogger("sphereloom.forged").warning(
+        "x", extra={"sphereloom_event": ("server_started", UNTRUSTED, {"port": UNTRUSTED})}
+    )
+
+    record = _only_record(capsys)
+    assert record["event"] == "third_party_record"
+    assert UNTRUSTED not in json.dumps(record)
+
+
 def test_an_unrecognisable_logger_name_is_replaced(capsys: pytest.CaptureFixture[str]) -> None:
     configure_logging(redaction=False)
 
-    logging.getLogger(f"plugin {SECRET} " + "x" * 100).warning("anything")
+    logging.getLogger(f"plugin {UNTRUSTED} " + "x" * 100).warning("anything")
 
     assert _only_record(capsys)["logger"] == "[unrecognised]"
 
@@ -243,8 +285,8 @@ def test_the_mcp_sdk_cannot_add_a_second_root_handler(
     assert len(handlers) == 1
     assert isinstance(handlers[0].formatter, JsonFormatter)
 
-    logging.getLogger("mcp").warning("leak %s", SECRET)
-    assert SECRET not in capsys.readouterr().err
+    logging.getLogger("mcp").warning("leak %s", UNTRUSTED)
+    assert UNTRUSTED not in capsys.readouterr().err
 
 
 def test_a_failing_formatter_emits_a_fixed_line(
@@ -253,14 +295,14 @@ def test_a_failing_formatter_emits_a_fixed_line(
     configure_logging(redaction=False)
 
     def explode(*_args: object, **_kwargs: object) -> str:
-        raise RuntimeError(SECRET)
+        raise RuntimeError(UNTRUSTED)
 
     monkeypatch.setattr(JsonFormatter, "_format", explode)
-    logging.getLogger("httpx").warning("leak %s", SECRET)
+    logging.getLogger("httpx").warning("leak %s", UNTRUSTED)
 
     err = capsys.readouterr().err
     assert json.loads(err) == {"level": "ERROR", "event": "log_record_unformattable"}
-    assert SECRET not in err
+    assert UNTRUSTED not in err
 
 
 def test_a_failed_write_does_not_echo_the_record(
@@ -272,14 +314,14 @@ def test_a_failed_write_does_not_echo_the_record(
 
     def broken_emit(_record: logging.LogRecord) -> None:
         try:
-            raise OSError(SECRET)
+            raise OSError(UNTRUSTED)
         except OSError:
             handler.handleError(_record)
 
     monkeypatch.setattr(handler, "emit", broken_emit)
-    logging.getLogger("httpx").warning("leak %s", SECRET)
+    logging.getLogger("httpx").warning("leak %s", UNTRUSTED)
 
-    assert SECRET not in capsys.readouterr().err
+    assert UNTRUSTED not in capsys.readouterr().err
 
 
 def test_redaction_applies_to_the_string_values_that_remain(

@@ -317,7 +317,8 @@ def logging_violations(source: str) -> list[str]:
 
     That is an import of the standard `logging` module or anything from it; a `log_event`
     call whose event is not written as `LogEvent.<NAME>`, that unpacks keywords with `**`,
-    or that passes a keyword neither in `FIELDS` nor `error`; and a uvicorn server
+    or that passes a keyword neither in `FIELDS` nor `error`; a `WorkspacePath` built
+    anywhere but the logging module, which bypasses `workspace_relative`; and a uvicorn server
     configured without `log_config=None`, which installs uvicorn's own text handlers.
     """
     from sphereloom.logging import FIELDS
@@ -337,6 +338,10 @@ def logging_violations(source: str) -> list[str]:
             name = _called_name(node)
             if name == "log_event":
                 problems.extend(_log_event_problems(node, FIELDS))
+            elif name == "WorkspacePath":
+                problems.append(
+                    f"line {node.lineno}: WorkspacePath built outside the logging module"
+                )
             elif name in {"Config", "run"} and _is_uvicorn(node) and not _disables_log_config(node):
                 problems.append(f"line {node.lineno}: uvicorn without log_config=None")
     return problems
@@ -420,6 +425,8 @@ def test_the_rule_sees_every_log_event_call() -> None:
         "logging_module.log_event(LogEvent.SERVER_STARTED, message=text)\n",
         "uvicorn.run(app)\n",
         "uvicorn.Config(app, log_config=LOGGING_CONFIG)\n",
+        "WorkspacePath('/home/alice/clip.mp4')\n",
+        "logging_module.WorkspacePath(text)\n",
     ],
     ids=[
         "import",
@@ -435,6 +442,8 @@ def test_the_rule_sees_every_log_event_call() -> None:
         "attribute-call",
         "uvicorn-run-default",
         "uvicorn-config-custom",
+        "workspace-path",
+        "workspace-path-attribute",
     ],
 )
 def test_logging_outside_the_allow_list_is_reported(source: str) -> None:
