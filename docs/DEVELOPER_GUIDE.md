@@ -122,7 +122,7 @@ tests/
   integration/    real hardware, opt-in only
 docs/
   DEVELOPER_GUIDE.md   this file
-  CAPABILITIES.md      what each capability can do today
+  CAPABILITIES.md      what each capability can do today, its table generated from the registry
   assets/              diagrams: Mermaid source (.mmd) and the SVG rendered from it
   internal/            design records, encrypted at rest
 ```

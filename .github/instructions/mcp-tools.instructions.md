@@ -31,5 +31,5 @@ applyTo: "src/sphereloom/tools/**/*.py"
 - Job management goes through `jobs_list`, `jobs_get`, and `jobs_cancel`.
 - Make cancellation behavior explicit in the output model.
 - Do not claim live preview, streaming, OSC exposure control, or OSC video stitching support.
-- Mark a capability `available` in `sphereloom/capabilities/data.py` and `docs/CAPABILITIES.md` in the same pull request that delivers its tool, and not before.
+- Mark a capability `available` in `sphereloom/capabilities/data.py` in the same pull request that delivers its tool, and not before, then regenerate `docs/CAPABILITIES.md` with `uv run python scripts/render_capability_matrix.py`; a test fails if the page is stale.
 - For planned-but-unavailable tools, return the structured `unsupported` error honestly.

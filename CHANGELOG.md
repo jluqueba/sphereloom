@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `capabilities_list` tool: an agent can ask which capabilities the active camera
+  connection supports before trying any of them. Each one reports `available`,
+  `not_yet_available` or `unsupported_by_vendor`, with a reason and a documentation link
+  when it is not available. The tool never contacts the camera.
+- The table in `docs/CAPABILITIES.md` is generated from the capability registry by
+  `scripts/render_capability_matrix.py`, and a test fails if the page and the registry
+  disagree.
 - Capability registry: every capability resolves to one of three states, available, not
   yet available or not supported by the vendor API, each unavailable one with a reason and
   a documentation link. Device operations run only after the capability check, which
