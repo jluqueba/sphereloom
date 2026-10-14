@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Bounded HTTP client for the camera's Wi-Fi API. Every request carries the protocol header
+  and explicit timeouts under a total deadline, every response is bounded while it is read,
+  and every failure, including one in the middle of a response, becomes a typed error. A
+  failure after a request may have reached the camera is never reported as safe to retry
+  unless the request is safe to repeat, so a capture cannot be duplicated by a retry.
 - `capabilities_list` tool: an agent can ask which capabilities the active camera
   connection supports before trying any of them. Each one reports `available`,
   `not_yet_available` or `unsupported_by_vendor`, with a reason and a documentation link
@@ -116,6 +121,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `SPHERELOOM_OSC_BASE_URL` is now validated in full at startup: it must be an `http://` or
+  `https://` address with a host and an optional numeric port, without credentials, a query
+  or a fragment. A malformed address fails with a configuration error naming the variable.
 - The `unsupported` error now reports a `status` of `not_yet_available` or
   `unsupported_by_vendor` instead of `available_in`, and names no milestone.
 - Logging accepts only allow-listed structured fields: every record is a fixed event with
@@ -163,6 +171,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- A configuration error no longer repeats the rejected value: the startup message names each
+  offending variable and the reason only. Before, a rejected `SPHERELOOM_HTTP_TOKEN`, or a
+  camera address carrying credentials, appeared in the error and in its chained cause.
 - Log lines from the MCP SDK, the HTTP client and the web server were written verbatim,
   bypassing redaction, so a camera URL with its query string or an exception message with
   absolute paths could reach the log. Every record now goes through one handler that keeps
