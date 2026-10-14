@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Bounded HTTP client for the camera's Wi-Fi API. Every request carries the protocol header
+  and explicit timeouts under a total deadline, every response is bounded while it is read,
+  and every failure, including one in the middle of a response, becomes a typed error. A
+  failure after a request may have reached the camera is never reported as safe to retry
+  unless the request is safe to repeat, so a capture cannot be duplicated by a retry.
 - `capabilities_list` tool: an agent can ask which capabilities the active camera
   connection supports before trying any of them. Each one reports `available`,
   `not_yet_available` or `unsupported_by_vendor`, with a reason and a documentation link

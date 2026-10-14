@@ -542,3 +542,126 @@ def test_logging_outside_the_allow_list_is_reported(source: str) -> None:
 )
 def test_allow_listed_logging_is_accepted(source: str) -> None:
     assert logging_violations(source) == []
+
+
+# Rule: only the Wi-Fi adapter talks HTTP to a camera (plan section 1).
+
+#: Packages under `src/sphereloom` allowed to import httpx, each with the reason.
+HTTPX_ALLOWED = {
+    "src/sphereloom/adapters/osc/": "the Wi-Fi backend is the only code that talks to a camera",
+}
+
+
+def httpx_imports(source: str) -> list[str]:
+    """Return every import of httpx, or of anything from it, in `source`."""
+    problems: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import | ast.ImportFrom):
+            problems.extend(
+                f"line {node.lineno}: import {name}"
+                for name in imported_names(node)
+                if name.split(".")[0] == "httpx"
+            )
+    return problems
+
+
+def httpx_restricted_sources() -> list[Path]:
+    files = sorted(SOURCE_ROOT.rglob("*.py"))
+    allowed = [path for path in files if _under(path, HTTPX_ALLOWED)]
+    assert allowed, "no module may use httpx; the rule would pass on nothing"
+    return [path for path in files if not _under(path, HTTPX_ALLOWED)]
+
+
+def _under(path: Path, prefixes: dict[str, str]) -> bool:
+    relative = path.relative_to(REPOSITORY_ROOT).as_posix()
+    return any(relative.startswith(prefix) for prefix in prefixes)
+
+
+@pytest.mark.parametrize(
+    "path",
+    httpx_restricted_sources(),
+    ids=lambda path: path.relative_to(REPOSITORY_ROOT).as_posix(),
+)
+def test_only_the_wifi_adapter_imports_httpx(path: Path) -> None:
+    assert httpx_imports(path.read_text("utf-8")) == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import httpx\n",
+        "import httpx as h\n",
+        "from httpx import AsyncClient\n",
+        "from httpx._transports import default\n",
+    ],
+    ids=["import", "aliased", "from-import", "private-module"],
+)
+def test_an_httpx_import_is_reported(source: str) -> None:
+    assert httpx_imports(source) != []
+
+
+def test_other_imports_are_accepted() -> None:
+    assert httpx_imports("import json\nfrom sphereloom.adapters.osc import client\n") == []
+
+
+# Rule: a digit test is ASCII-only, because `int` refuses digits such as "²" that
+# `str.isdigit` accepts, which turns a validator into an unmapped exception.
+
+_DIGIT_TESTS = frozenset({"isdigit", "isdecimal", "isnumeric"})
+
+
+def unguarded_digit_tests(source: str) -> list[str]:
+    """Return every digit test not combined with `.isascii()` on the same value by `and`."""
+    tree = ast.parse(source)
+    guarded: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
+            calls = [call for value in node.values if (call := _method_call(value)) is not None]
+            ascii_receivers = {ast.dump(func.value) for func in calls if func.attr == "isascii"}
+            guarded.update(
+                id(func)
+                for func in calls
+                if func.attr in _DIGIT_TESTS and ast.dump(func.value) in ascii_receivers
+            )
+    return [
+        f"line {func.lineno}: .{func.attr}() without .isascii()"
+        for node in ast.walk(tree)
+        if (func := _method_call(node)) is not None
+        and func.attr in _DIGIT_TESTS
+        and id(func) not in guarded
+    ]
+
+
+def _method_call(node: ast.AST) -> ast.Attribute | None:
+    """Return the method of a call such as `value.isdigit()`, or `None`."""
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        return node.func
+    return None
+
+
+@pytest.mark.parametrize(
+    "path",
+    sorted(SOURCE_ROOT.rglob("*.py")),
+    ids=lambda path: path.relative_to(REPOSITORY_ROOT).as_posix(),
+)
+def test_digit_tests_are_ascii_only(path: Path) -> None:
+    assert unguarded_digit_tests(path.read_text("utf-8")) == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "value.isdigit()\n",
+        "value.isdecimal()\n",
+        "value.isnumeric()\n",
+        "other.isascii() and value.isdigit()\n",
+        "value.isascii() or value.isdigit()\n",
+    ],
+    ids=["isdigit", "isdecimal", "isnumeric", "other-receiver", "or"],
+)
+def test_an_unguarded_digit_test_is_reported(source: str) -> None:
+    assert unguarded_digit_tests(source) != []
+
+
+def test_an_ascii_guarded_digit_test_is_accepted() -> None:
+    assert unguarded_digit_tests("ok = value.isascii() and value.isdigit()\n") == []
