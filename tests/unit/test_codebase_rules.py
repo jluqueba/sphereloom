@@ -611,18 +611,24 @@ _DIGIT_TESTS = frozenset({"isdigit", "isdecimal", "isnumeric"})
 
 
 def unguarded_digit_tests(source: str) -> list[str]:
-    """Return every digit test not combined with `.isascii()` on the same value by `and`."""
+    """Return every digit test not preceded, in the same `and`, by `.isascii()` on its value.
+
+    The guard must come first: in `value.isdigit() and int(value) and value.isascii()`,
+    `int` raises before the guard runs.
+    """
     tree = ast.parse(source)
     guarded: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
-            calls = [call for value in node.values if (call := _method_call(value)) is not None]
-            ascii_receivers = {ast.dump(func.value) for func in calls if func.attr == "isascii"}
-            guarded.update(
-                id(func)
-                for func in calls
-                if func.attr in _DIGIT_TESTS and ast.dump(func.value) in ascii_receivers
-            )
+            ascii_receivers: set[str] = set()
+            for value in node.values:
+                func = _method_call(value)
+                if func is None:
+                    continue
+                if func.attr in _DIGIT_TESTS and ast.dump(func.value) in ascii_receivers:
+                    guarded.add(id(func))
+                if func.attr == "isascii":
+                    ascii_receivers.add(ast.dump(func.value))
     return [
         f"line {func.lineno}: .{func.attr}() without .isascii()"
         for node in ast.walk(tree)
@@ -656,8 +662,18 @@ def test_digit_tests_are_ascii_only(path: Path) -> None:
         "value.isnumeric()\n",
         "other.isascii() and value.isdigit()\n",
         "value.isascii() or value.isdigit()\n",
+        "value.isdigit() and int(value) and value.isascii()\n",
+        "value.isdigit() and value.isascii()\n",
     ],
-    ids=["isdigit", "isdecimal", "isnumeric", "other-receiver", "or"],
+    ids=[
+        "isdigit",
+        "isdecimal",
+        "isnumeric",
+        "other-receiver",
+        "or",
+        "guard-after-use",
+        "guard-after",
+    ],
 )
 def test_an_unguarded_digit_test_is_reported(source: str) -> None:
     assert unguarded_digit_tests(source) != []

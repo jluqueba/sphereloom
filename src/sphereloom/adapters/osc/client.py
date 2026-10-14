@@ -16,8 +16,12 @@ hold in one place:
   exception text from the device or the library reaches the error, and the library
   exception is never chained to it.
 - **An ambiguous outcome is never retryable.** Once a request may have reached the camera,
-  its failure is reported as retryable only if the caller declared the request safe to
-  replay. Only a failure to connect proves that nothing was sent.
+  its failure is reported as retryable only if the request is safe to replay, which the
+  client decides itself from the endpoint and, for a command, from `REPLAY_SAFE_COMMANDS`;
+  no caller can declare a capture safe to repeat. Only a failure to connect proves that
+  nothing was sent.
+- **Messages name only the camera's host and port,** never credentials or a query string
+  that a configured base URL might carry.
 """
 
 from __future__ import annotations
@@ -76,6 +80,23 @@ class OscEndpoint(Enum):
         return self.value[1]
 
 
+#: Commands that only read, so repeating one after an ambiguous outcome changes nothing.
+#: Everything else, a capture, a setting or a deletion above all, is never replay-safe.
+REPLAY_SAFE_COMMANDS = frozenset({"camera.getOptions", "camera.listFiles"})
+
+
+def is_replay_safe(endpoint: OscEndpoint, body: Mapping[str, JsonValue] | None) -> bool:
+    """Whether repeating this request after an ambiguous outcome is harmless.
+
+    Reading information, state or a command's status is. Executing a command is only for a
+    command in `REPLAY_SAFE_COMMANDS`, named exactly.
+    """
+    if endpoint is not OscEndpoint.EXECUTE:
+        return True
+    name = None if body is None else body.get("name")
+    return isinstance(name, str) and name in REPLAY_SAFE_COMMANDS
+
+
 @dataclass(frozen=True, slots=True)
 class _Failure:
     """How a failed exchange is reported, before retryability is decided."""
@@ -111,6 +132,12 @@ class OscHttpClient:
         max_body_bytes: int = MAX_PAYLOAD_BYTES,
     ) -> None:
         self._base_url = base_url.rstrip("/")
+        parsed = httpx.URL(self._base_url)
+        # Only scheme, host and port ever appear in a message: a configured URL could carry
+        # credentials or a query string.
+        self._display_url = f"{parsed.scheme}://{parsed.host}" + (
+            f":{parsed.port}" if parsed.port is not None else ""
+        )
         self._deadline = (
             connect_timeout + read_timeout if deadline_seconds is None else deadline_seconds
         )
@@ -154,14 +181,9 @@ class OscHttpClient:
         self,
         endpoint: OscEndpoint,
         body: Mapping[str, JsonValue] | None = None,
-        *,
-        replay_safe: bool,
     ) -> dict[str, JsonValue]:
-        """Send one request and return the decoded JSON object of an HTTP 200 reply.
-
-        `replay_safe` has no default on purpose: whether repeating a request is harmless is
-        a property of the request, and only the caller knows it.
-        """
+        """Send one request and return the decoded JSON object of an HTTP 200 reply."""
+        replay_safe = is_replay_safe(endpoint, body)
         failure: _Failure | None = None
         try:
             async with asyncio.timeout(self._deadline):
@@ -216,7 +238,7 @@ class OscHttpClient:
             raise
 
     def _error(self, failure: _Failure, *, replay_safe: bool) -> SphereLoomError:
-        message = failure.message.format(base_url=self._base_url)
+        message = failure.message.format(base_url=self._display_url)
         details: dict[str, JsonValue] = {"reason": failure.reason, **dict(failure.details)}
         replayable = not failure.never_retry and (replay_safe or not failure.delivered)
         retryable: Literal[False] | None = None if replayable else False
@@ -233,7 +255,8 @@ def _declared_length(response: httpx.Response) -> int:
     # `isdigit` alone accepts characters such as "²", which `int` then refuses.
     if not (value.isascii() and value.isdigit()):
         return 0
-    return int(value) if len(value) <= 18 else MAX_PAYLOAD_BYTES * 1024
+    significant = value.lstrip("0")
+    return int(significant or "0") if len(significant) <= 18 else MAX_PAYLOAD_BYTES * 1024
 
 
 _UNREACHABLE = (
@@ -255,6 +278,8 @@ def _transport_failure(error: httpx.HTTPError) -> _Failure:
         return _Failure(NotConnectedError, "unreachable", _UNREACHABLE, delivered=False)
     if isinstance(error, httpx.PoolTimeout):
         return _Failure(OperationTimeoutError, "pool_timeout", _POOL, delivered=False)
+    if isinstance(error, httpx.WriteTimeout):
+        return _Failure(OperationTimeoutError, "write_timeout", _TIMED_OUT, delivered=True)
     if isinstance(error, httpx.TimeoutException):
         return _Failure(OperationTimeoutError, "read_timeout", _TIMED_OUT, delivered=True)
     if isinstance(error, httpx.NetworkError | httpx.RemoteProtocolError):

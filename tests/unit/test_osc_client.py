@@ -16,16 +16,26 @@ import pytest
 
 from sphereloom.adapters.osc.client import (
     MAX_ERROR_BODY_BYTES,
+    REPLAY_SAFE_COMMANDS,
     OscEndpoint,
     OscHttpClient,
+    is_replay_safe,
 )
 from sphereloom.config import Settings
+from sphereloom.domain.bounded import JsonValue
 from sphereloom.domain.errors import ErrorCode, SphereLoomError
 
 BASE_URL = "http://192.168.42.1"
 UNTRUSTED = "device-text-alice-holiday"
 
 type Handler = Callable[[httpx.Request], httpx.Response]
+
+#: A command that only reads, and one that captures: the two sides of replay safety.
+READ_ONLY: dict[str, JsonValue] = {
+    "name": "camera.getOptions",
+    "parameters": {"optionNames": ["captureMode"]},
+}
+CAPTURE: dict[str, JsonValue] = {"name": "camera.takePicture"}
 
 
 class _Stream(httpx.AsyncByteStream):
@@ -44,13 +54,20 @@ class _Stream(httpx.AsyncByteStream):
             yield chunk
 
 
-def _client(handler: Handler, **kwargs: float | int) -> OscHttpClient:
+def _client(
+    handler: Handler,
+    *,
+    base_url: str = BASE_URL,
+    deadline_seconds: float | None = None,
+    max_body_bytes: int = 1024 * 1024,
+) -> OscHttpClient:
     return OscHttpClient(
-        BASE_URL,
+        base_url,
         connect_timeout=5,
         read_timeout=15,
         transport=httpx.MockTransport(handler),
-        **kwargs,  # type: ignore[arg-type]  # only numeric options are passed
+        deadline_seconds=deadline_seconds,
+        max_body_bytes=max_body_bytes,
     )
 
 
@@ -66,13 +83,18 @@ def _raising(error: Exception) -> Handler:
 
 
 async def _failure(
-    handler: Handler, *, replay_safe: bool = False, **kwargs: float | int
+    handler: Handler,
+    *,
+    replay_safe: bool = False,
+    deadline_seconds: float | None = None,
+    max_body_bytes: int = 1024 * 1024,
 ) -> SphereLoomError:
-    async with _client(handler, **kwargs) as client:
+    """Send a read-only command when `replay_safe`, a capture otherwise, and return the error."""
+    async with _client(
+        handler, deadline_seconds=deadline_seconds, max_body_bytes=max_body_bytes
+    ) as client:
         with pytest.raises(SphereLoomError) as caught:
-            await client.request(
-                OscEndpoint.EXECUTE, {"name": "camera.takePicture"}, replay_safe=replay_safe
-            )
+            await client.request(OscEndpoint.EXECUTE, READ_ONLY if replay_safe else CAPTURE)
     return caught.value
 
 
@@ -84,9 +106,7 @@ async def test_a_request_carries_the_protocol_headers_and_timeouts() -> None:
         return _json(200, {"state": "done"})
 
     async with _client(handler) as client:
-        result = await client.request(
-            OscEndpoint.EXECUTE, {"name": "camera.getOptions"}, replay_safe=True
-        )
+        result = await client.request(OscEndpoint.EXECUTE, {"name": "camera.getOptions"})
 
     (request,) = seen
     assert result == {"state": "done"}
@@ -106,7 +126,7 @@ async def test_the_info_endpoint_is_a_get_without_a_body() -> None:
         return _json(200, {"model": "X5"})
 
     async with _client(handler) as client:
-        await client.request(OscEndpoint.INFO, replay_safe=True)
+        await client.request(OscEndpoint.INFO)
 
     assert seen[0].method == "GET"
     assert seen[0].url.path == "/osc/info"
@@ -156,7 +176,7 @@ async def test_a_hostile_declared_length_never_escapes_as_an_untyped_error(
     response.headers = httpx.Headers([(b"Content-Length", declared)])
 
     async with _client(lambda _: response) as client:
-        result = await client.request(OscEndpoint.INFO, replay_safe=True)
+        result = await client.request(OscEndpoint.INFO)
 
     assert result == {"state": "done"}
 
@@ -270,7 +290,7 @@ async def test_a_vendor_error_is_preserved_bounded() -> None:
         (httpx.ConnectTimeout(UNTRUSTED), ErrorCode.NOT_CONNECTED, "unreachable", False),
         (httpx.PoolTimeout(UNTRUSTED), ErrorCode.TIMEOUT, "pool_timeout", False),
         (httpx.ReadTimeout(UNTRUSTED), ErrorCode.TIMEOUT, "read_timeout", True),
-        (httpx.WriteTimeout(UNTRUSTED), ErrorCode.TIMEOUT, "read_timeout", True),
+        (httpx.WriteTimeout(UNTRUSTED), ErrorCode.TIMEOUT, "write_timeout", True),
         (httpx.ReadError(UNTRUSTED), ErrorCode.NOT_CONNECTED, "connection_dropped", True),
         (httpx.WriteError(UNTRUSTED), ErrorCode.NOT_CONNECTED, "connection_dropped", True),
         (httpx.RemoteProtocolError(UNTRUSTED), ErrorCode.NOT_CONNECTED, "connection_dropped", True),
@@ -351,3 +371,79 @@ async def test_no_device_or_library_text_reaches_the_message_or_the_cause(handle
     assert UNTRUSTED not in error.message
     assert error.__cause__ is None
     assert not isinstance(error.__context__, httpx.HTTPError)
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "body", "safe"),
+    [
+        (OscEndpoint.INFO, None, True),
+        (OscEndpoint.STATE, None, True),
+        (OscEndpoint.STATUS, {"id": "1"}, True),
+        (OscEndpoint.EXECUTE, {"name": "camera.getOptions"}, True),
+        (OscEndpoint.EXECUTE, {"name": "camera.listFiles"}, True),
+        (OscEndpoint.EXECUTE, {"name": "camera.takePicture"}, False),
+        (OscEndpoint.EXECUTE, {"name": "camera.startCapture"}, False),
+        (OscEndpoint.EXECUTE, {"name": "camera.stopCapture"}, False),
+        (OscEndpoint.EXECUTE, {"name": "camera.setOptions"}, False),
+        (OscEndpoint.EXECUTE, {"name": "camera.delete"}, False),
+        (OscEndpoint.EXECUTE, {"name": "camera.getOptions "}, False),
+        (OscEndpoint.EXECUTE, {"name": ["camera.getOptions"]}, False),
+        (OscEndpoint.EXECUTE, {}, False),
+        (OscEndpoint.EXECUTE, None, False),
+    ],
+    ids=[
+        "info",
+        "state",
+        "status",
+        "get-options",
+        "list-files",
+        "take-picture",
+        "start-capture",
+        "stop-capture",
+        "set-options",
+        "delete",
+        "padded-name",
+        "name-not-a-string",
+        "no-name",
+        "no-body",
+    ],
+)
+def test_only_reads_are_replay_safe(
+    endpoint: OscEndpoint, body: dict[str, object] | None, safe: bool
+) -> None:
+    assert is_replay_safe(endpoint, body) is safe  # type: ignore[arg-type]  # hostile bodies are the point
+
+
+def test_the_replay_safe_commands_only_read() -> None:
+    assert frozenset({"camera.getOptions", "camera.listFiles"}) == REPLAY_SAFE_COMMANDS
+
+
+@pytest.mark.parametrize("status", [429, 500, 503])
+async def test_an_ambiguous_capture_is_never_retryable(status: int) -> None:
+    """The camera may have taken the picture; retrying could take a second one."""
+    async with _client(lambda _: _json(status, {})) as client:
+        with pytest.raises(SphereLoomError) as caught:
+            await client.request(OscEndpoint.EXECUTE, CAPTURE)
+
+    assert caught.value.retryable is False
+
+
+async def test_a_configured_url_never_leaks_credentials_or_query_into_a_message() -> None:
+    url = f"http://operator:{UNTRUSTED}@192.168.42.1:8080/?token={UNTRUSTED}"
+
+    async with _client(_raising(httpx.ConnectError("x")), base_url=url) as client:
+        with pytest.raises(SphereLoomError) as caught:
+            await client.request(OscEndpoint.INFO)
+
+    assert UNTRUSTED not in caught.value.message
+    assert "operator" not in caught.value.message
+    assert "http://192.168.42.1:8080" in caught.value.message
+
+
+async def test_a_zero_padded_declared_length_is_read_as_its_value() -> None:
+    body = b'{"state": "done"}'
+    response = httpx.Response(200, stream=_Stream([body]))
+    response.headers = httpx.Headers([(b"Content-Length", b"0" * 30 + str(len(body)).encode())])
+
+    async with _client(lambda _: response, max_body_bytes=4096) as client:
+        assert await client.request(OscEndpoint.INFO) == {"state": "done"}

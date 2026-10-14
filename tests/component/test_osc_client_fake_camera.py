@@ -19,12 +19,11 @@ async def test_the_camera_accepts_the_client_s_protocol_headers() -> None:
     """The fake rejects any request without the OSC header with a 403."""
     with run_fake_camera(FakeCamera()) as base_url:
         async with _client(base_url) as client:
-            info = await client.request(OscEndpoint.INFO, replay_safe=True)
-            state = await client.request(OscEndpoint.STATE, replay_safe=True)
+            info = await client.request(OscEndpoint.INFO)
+            state = await client.request(OscEndpoint.STATE)
             options = await client.request(
                 OscEndpoint.EXECUTE,
                 {"name": "camera.getOptions", "parameters": {"optionNames": ["captureMode"]}},
-                replay_safe=True,
             )
 
     assert info["model"]
@@ -47,9 +46,7 @@ async def test_camera_failures_become_taxonomy_errors(
     with run_fake_camera(FakeCamera(scenario=scenario)) as base_url:
         async with _client(base_url) as client:
             with pytest.raises(SphereLoomError) as caught:
-                await client.request(
-                    OscEndpoint.EXECUTE, {"name": "camera.takePicture"}, replay_safe=False
-                )
+                await client.request(OscEndpoint.EXECUTE, {"name": "camera.takePicture"})
 
     error = caught.value
     assert error.code is code
