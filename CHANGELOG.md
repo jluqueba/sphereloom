@@ -121,6 +121,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `SPHERELOOM_OSC_BASE_URL` is now validated in full at startup: it must be an `http://` or
+  `https://` address with a host and an optional numeric port, without credentials, a query
+  or a fragment. A malformed address fails with a configuration error naming the variable.
 - The `unsupported` error now reports a `status` of `not_yet_available` or
   `unsupported_by_vendor` instead of `available_in`, and names no milestone.
 - Logging accepts only allow-listed structured fields: every record is a fixed event with

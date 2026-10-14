@@ -132,14 +132,14 @@ class OscHttpClient:
         max_body_bytes: int = MAX_PAYLOAD_BYTES,
     ) -> None:
         self._base_url = base_url.rstrip("/")
+        maximum = connect_timeout + read_timeout
+        # An explicit deadline can only shorten the cap, never lengthen or remove it.
+        self._deadline = maximum if deadline_seconds is None else min(deadline_seconds, maximum)
         parsed = httpx.URL(self._base_url)
         # Only scheme, host and port ever appear in a message: a configured URL could carry
         # credentials or a query string.
         self._display_url = f"{parsed.scheme}://{parsed.host}" + (
             f":{parsed.port}" if parsed.port is not None else ""
-        )
-        self._deadline = (
-            connect_timeout + read_timeout if deadline_seconds is None else deadline_seconds
         )
         self._max_body_bytes = max_body_bytes
         self._client = httpx.AsyncClient(
@@ -176,6 +176,11 @@ class OscHttpClient:
     async def aclose(self) -> None:
         """Release the connection pool."""
         await self._client.aclose()
+
+    @property
+    def deadline_seconds(self) -> float:
+        """The total deadline each exchange is held to."""
+        return self._deadline
 
     async def request(
         self,

@@ -13,6 +13,7 @@ import ipaddress
 from enum import StrEnum
 from pathlib import Path
 from typing import Self
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -100,10 +101,32 @@ class Settings(BaseSettings):
     @field_validator("osc_base_url")
     @classmethod
     def _validate_base_url(cls, value: str) -> str:
-        if not value.startswith(("http://", "https://")):
+        """Accept only `http(s)://host[:port]` with an optional path.
+
+        Parsed fully here, so a malformed address fails at startup naming the variable
+        rather than later inside the camera client. Credentials, a query and a fragment are
+        refused: the camera's address has none, and they would otherwise be sent with every
+        request.
+        """
+        name = f"{ENV_PREFIX}OSC_BASE_URL"
+        parts = urlsplit(value)
+        try:
+            port = parts.port
+        except ValueError:
+            port = -1
+        if parts.scheme not in {"http", "https"} or not parts.hostname or port == -1:
             message = (
-                f"{ENV_PREFIX}OSC_BASE_URL must start with http:// or https://, got {value!r}."
+                f"{name} must be an http:// or https:// address with a host and, optionally, "
+                "a numeric port, such as http://192.168.42.1."
             )
+            raise ValueError(message)
+        if (
+            parts.username is not None
+            or parts.password is not None
+            or parts.query
+            or parts.fragment
+        ):
+            message = f"{name} must not contain credentials, a query or a fragment."
             raise ValueError(message)
         return value.rstrip("/")
 

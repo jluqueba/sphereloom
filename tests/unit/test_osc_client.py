@@ -447,3 +447,15 @@ async def test_a_zero_padded_declared_length_is_read_as_its_value() -> None:
 
     async with _client(lambda _: response, max_body_bytes=4096) as client:
         assert await client.request(OscEndpoint.INFO) == {"state": "done"}
+
+
+@pytest.mark.parametrize(
+    ("requested", "effective"),
+    [(None, 20.0), (0.05, 0.05), (20.0, 20.0), (1000.0, 20.0), (float("inf"), 20.0)],
+    ids=["default", "shorter", "equal", "longer", "infinite"],
+)
+async def test_an_explicit_deadline_can_only_shorten_the_cap(
+    requested: float | None, effective: float
+) -> None:
+    async with _client(lambda _: _json(200, {}), deadline_seconds=requested) as client:
+        assert client.deadline_seconds == effective

@@ -23,6 +23,50 @@ def test_defaults_are_the_safe_ones(settings: Settings) -> None:
     assert settings.http_allow_non_loopback is False
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "192.168.42.1",
+        "ftp://192.168.42.1",
+        "http://",
+        "http://192.168.42.1:not-a-port",
+        "http://192.168.42.1:99999",
+        "http://operator:secret@192.168.42.1",
+        "http://192.168.42.1/?token=secret",
+        "http://192.168.42.1/#fragment",
+    ],
+    ids=[
+        "no-scheme",
+        "wrong-scheme",
+        "no-host",
+        "non-numeric-port",
+        "port-out-of-range",
+        "credentials",
+        "query",
+        "fragment",
+    ],
+)
+def test_a_malformed_camera_address_fails_at_startup_naming_the_variable(
+    monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    """AC-9.6: the error names the variable, and the address never reaches the camera client."""
+    monkeypatch.setenv("SPHERELOOM_OSC_BASE_URL", url)
+
+    with pytest.raises(InvalidArgumentError, match="SPHERELOOM_OSC_BASE_URL"):
+        load_settings()
+
+
+@pytest.mark.parametrize(
+    "url", ["http://192.168.42.1", "http://127.0.0.1:8080/", "https://camera.local/osc-root"]
+)
+def test_a_well_formed_camera_address_is_accepted(
+    monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    monkeypatch.setenv("SPHERELOOM_OSC_BASE_URL", url)
+
+    assert load_settings().osc_base_url == url.rstrip("/")
+
+
 def test_http_transport_refuses_to_start_without_a_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
