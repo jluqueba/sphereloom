@@ -459,3 +459,53 @@ async def test_an_explicit_deadline_can_only_shorten_the_cap(
 ) -> None:
     async with _client(lambda _: _json(200, {}), deadline_seconds=requested) as client:
         assert client.deadline_seconds == effective
+
+
+@pytest.mark.parametrize(
+    ("connect", "read", "deadline"),
+    [
+        (float("nan"), 15.0, None),
+        (5.0, float("inf"), None),
+        (0.0, 15.0, None),
+        (5.0, -1.0, None),
+        (5.0, 15.0, float("nan")),
+        (5.0, 15.0, 0.0),
+        (5.0, 15.0, -1.0),
+    ],
+    ids=[
+        "nan-connect",
+        "infinite-read",
+        "zero-connect",
+        "negative-read",
+        "nan-deadline",
+        "zero-deadline",
+        "negative-deadline",
+    ],
+)
+def test_a_timeout_that_would_disable_the_deadline_is_refused(
+    connect: float, read: float, deadline: float | None
+) -> None:
+    with pytest.raises(SphereLoomError) as caught:
+        OscHttpClient(
+            BASE_URL, connect_timeout=connect, read_timeout=read, deadline_seconds=deadline
+        )
+
+    assert caught.value.code is ErrorCode.INTERNAL
+
+
+@pytest.mark.parametrize("body", ["failing", "stalled"])
+async def test_a_404_is_classified_without_reading_its_body(body: str) -> None:
+    """Even for a read-only request, a non-OSC device is never retryable."""
+    stall = asyncio.Event()
+
+    class _Stalled(httpx.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            await stall.wait()
+            yield b""
+
+    stream = _Stream([b"x", b"y"], fail_after=0) if body == "failing" else _Stalled()
+    error = await _failure(lambda _: httpx.Response(404, stream=stream), replay_safe=True)
+
+    assert error.code is ErrorCode.NOT_CONNECTED
+    assert error.details["reason"] == "not_an_osc_endpoint"
+    assert error.retryable is False

@@ -176,3 +176,46 @@ def test_env_example_documents_nothing_unknown() -> None:
 
     unknown = documented - known - agent_variables
     assert not unknown, f".env.example documents variables that do not exist: {sorted(unknown)}"
+
+
+SECRET = "s3cret-value-under-test"
+
+
+@pytest.mark.parametrize(
+    ("variable", "value", "extra"),
+    [
+        ("SPHERELOOM_OSC_BASE_URL", f"http://operator:{SECRET}@192.168.42.1", {}),
+        ("SPHERELOOM_OSC_BASE_URL", f"http://192.168.42.1/?token={SECRET}", {}),
+        (
+            "SPHERELOOM_HTTP_TOKEN",
+            SECRET,
+            {"SPHERELOOM_TRANSPORT": "http", "SPHERELOOM_HTTP_HOST": "0.0.0.0"},
+        ),
+    ],
+    ids=["url-credentials", "url-query", "http-token"],
+)
+def test_a_configuration_error_never_repeats_an_input_value(
+    monkeypatch: pytest.MonkeyPatch, variable: str, value: str, extra: dict[str, str]
+) -> None:
+    """The validation error records every input; neither its text nor the error is passed on."""
+    monkeypatch.setenv(variable, value)
+    for name, setting in extra.items():
+        monkeypatch.setenv(name, setting)
+
+    with pytest.raises(InvalidArgumentError) as caught:
+        load_settings()
+
+    assert SECRET not in caught.value.message
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert "SPHERELOOM_" in caught.value.message
+
+
+@pytest.mark.parametrize("url", ["http://[", "http://camera:", "http://camera:/osc"])
+def test_an_unparseable_or_empty_port_address_names_the_variable(
+    monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    monkeypatch.setenv("SPHERELOOM_OSC_BASE_URL", url)
+
+    with pytest.raises(InvalidArgumentError, match="SPHERELOOM_OSC_BASE_URL must be"):
+        load_settings()

@@ -171,6 +171,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- A configuration error no longer repeats the rejected value: the startup message names each
+  offending variable and the reason only. Before, a rejected `SPHERELOOM_HTTP_TOKEN`, or a
+  camera address carrying credentials, appeared in the error and in its chained cause.
 - Log lines from the MCP SDK, the HTTP client and the web server were written verbatim,
   bypassing redaction, so a camera URL with its query string or an exception message with
   absolute paths could reach the log. Every record now goes through one handler that keeps

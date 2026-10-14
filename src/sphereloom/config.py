@@ -13,9 +13,10 @@ import ipaddress
 from enum import StrEnum
 from pathlib import Path
 from typing import Self
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
+from pydantic_core import ErrorDetails
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from sphereloom.domain.errors import InvalidArgumentError
@@ -109,12 +110,15 @@ class Settings(BaseSettings):
         request.
         """
         name = f"{ENV_PREFIX}OSC_BASE_URL"
-        parts = urlsplit(value)
-        try:
-            port = parts.port
-        except ValueError:
-            port = -1
-        if parts.scheme not in {"http", "https"} or not parts.hostname or port == -1:
+        parts = _split_url(value)
+        # An explicit but empty port, as in `http://camera:`, is refused too.
+        empty_port = parts is not None and parts.netloc.rsplit("@", 1)[-1].endswith(":")
+        if (
+            parts is None
+            or parts.scheme not in {"http", "https"}
+            or not parts.hostname
+            or empty_port
+        ):
             message = (
                 f"{name} must be an http:// or https:// address with a host and, optionally, "
                 "a numeric port, such as http://192.168.42.1."
@@ -174,13 +178,44 @@ class Settings(BaseSettings):
         return self.workspace_dir.expanduser().resolve()
 
 
+def _split_url(value: str) -> SplitResult | None:
+    """Split a URL, or return `None` if it or its port cannot be parsed.
+
+    Both steps can raise: `urlsplit` on a malformed bracketed host, and `port` on a
+    non-numeric or out-of-range port, which is only checked when it is read.
+    """
+    try:
+        parts = urlsplit(value)
+        if parts.port is None or parts.port >= 0:
+            return parts
+    except ValueError:
+        return None
+    return None
+
+
 def load_settings() -> Settings:
-    """Load and validate settings, failing fast with an actionable message."""
+    """Load and validate settings, failing fast with an actionable message.
+
+    The message names each offending variable and the reason, never the value given: a
+    rejected value can be a token or a URL carrying credentials. The validation error, which
+    records every input value, is neither rendered nor chained.
+    """
+    problems: str | None = None
     try:
         return Settings()
-    except ValueError as exc:
-        raise InvalidArgumentError(
-            f"SphereLoom could not start because its configuration is invalid. {exc}".replace(
-                "\n", " "
-            ),
-        ) from exc
+    except ValidationError as exc:
+        problems = "; ".join(_describe(error) for error in exc.errors(include_input=False))
+    except ValueError:
+        problems = "the settings could not be read"
+    message = f"SphereLoom could not start because its configuration is invalid: {problems}."
+    raise InvalidArgumentError(message.replace("\n", " "))
+
+
+def _describe(error: ErrorDetails) -> str:
+    """Render one validation error as its variable name and reason, without its input."""
+    reason = str(error["msg"]).removeprefix("Value error, ")
+    fields = [str(part) for part in error["loc"]]
+    if not fields:
+        return reason
+    variable = ENV_PREFIX + "_".join(fields).upper()
+    return reason if reason.startswith(variable) else f"{variable}: {reason}"

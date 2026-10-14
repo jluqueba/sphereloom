@@ -27,6 +27,7 @@ hold in one place:
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -132,6 +133,13 @@ class OscHttpClient:
         max_body_bytes: int = MAX_PAYLOAD_BYTES,
     ) -> None:
         self._base_url = base_url.rstrip("/")
+        if not all(math.isfinite(value) and value > 0 for value in (connect_timeout, read_timeout)):
+            message = "The camera client needs finite, positive connect and read timeouts."
+            raise InternalError(message)
+        if deadline_seconds is not None and not deadline_seconds > 0:
+            # `not x > 0` also refuses NaN, which every comparison would let through.
+            message = "An explicit camera deadline must be positive."
+            raise InternalError(message)
         maximum = connect_timeout + read_timeout
         # An explicit deadline can only shorten the cap, never lengthen or remove it.
         self._deadline = maximum if deadline_seconds is None else min(deadline_seconds, maximum)
@@ -212,7 +220,13 @@ class OscHttpClient:
             endpoint.method, endpoint.path, json=dict(body) if body is not None else None
         ) as response:
             if response.status_code != httpx.codes.OK:
-                payload = await self._read(response, MAX_ERROR_BODY_BYTES, tolerant=True)
+                # A 404 is classified on its status alone: reading its body could fail and
+                # turn a non-OSC device into a retryable connection error.
+                payload = (
+                    None
+                    if response.status_code == httpx.codes.NOT_FOUND
+                    else await self._read(response, MAX_ERROR_BODY_BYTES, tolerant=True)
+                )
                 raise _StatusFailureError(_status_failure(response.status_code, payload))
             payload = await self._read(response, self._max_body_bytes, tolerant=False)
         if not isinstance(payload, dict):
