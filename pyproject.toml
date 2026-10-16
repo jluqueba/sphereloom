@@ -36,7 +36,7 @@ dependencies = [
 # or type checker must never turn an unrelated pull request red. Bumps are deliberate,
 # reviewed changes of their own. See ADR-0009.
 dev = [
-  "ruff==0.16.10",
+  "ruff==0.17.0",
   "mypy==2.4.0",
   "pytest==9.1.1",
   "pytest-asyncio==1.4.0",
